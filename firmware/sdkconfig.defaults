@@ -57,3 +57,11 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 CONFIG_LV_USE_ASSERT_NULL=y
 CONFIG_LV_USE_ASSERT_MALLOC=y
+
+# ── panel scan direction ───────────────────────────────────────────────────
+# On unit Silexperience (Sunton 2424S012C, GC9A01 batch of 2026-09) the
+# driver's default scan direction already draws correctly: the Kconfig
+# default (mirror X on) made the picture come out mirrored. Untick it here
+# rather than in Kconfig.projbuild, so the Kconfig help stays accurate for
+# the batches that do need mirroring.
+CONFIG_HARNESS_LCD_MIRROR_X=n
