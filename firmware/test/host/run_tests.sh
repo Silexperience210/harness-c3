@@ -15,8 +15,8 @@ echo "== build test_cable_frame =="
 gcc $CFLAGS test_cable_frame.c "$MAIN/cable_frame.c" -o "$BUILD/test_cable_frame"
 
 echo "== build test_messages =="
-gcc $CFLAGS -DCABLE_HOST_TEST test_messages.c "$MAIN/cable_frame.c" "$MAIN/cable_client.c" \
-    cjson/cJSON.c -o "$BUILD/test_messages"
+gcc $CFLAGS -DCABLE_HOST_TEST test_messages.c layout_tu.c "$MAIN/cable_frame.c" \
+    "$MAIN/cable_client.c" cjson/cJSON.c -o "$BUILD/test_messages"
 
 echo "== run test_cable_frame =="
 "$BUILD/test_cable_frame" ../vectors/cable_frame.txt

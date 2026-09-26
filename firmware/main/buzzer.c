@@ -100,7 +100,7 @@ bool buzzer_init(void)
 
 void buzzer_beep(buzzer_pattern_t pattern)
 {
-    if (pattern < 0 || pattern > BUZZER_BEEP_ERROR) return;
+    if ((unsigned)pattern > (unsigned)BUZZER_BEEP_ERROR) return;
     // One short-lived task per pattern keeps the caller non-blocking; a new
     // beep simply plays over (LEDC writes are last-writer-wins, and patterns
     // are rare — a question or a finished turn).

@@ -42,13 +42,18 @@
 // Hardware self-description reported in `hello.hw`. Informational — a daemon
 // that predates the field ignores it. Distinct from the reference boards'
 // "cst9217+axp2101"/"cst816s" so a log line names what this dial actually is.
+// This is the BASE name: app_main appends the touch controller it detected at
+// boot ("+cst816d", …), the way upstream self-describes its variants.
 #define CABLE_HW_NAME "esp32c3+gc9a01"
 
 // Field caps (PROTOCOL.md §11).
 #define ID_MAX   48   // agentId / request id (uuid or 32-hex) + NUL
-#ifndef NAME_MAX      // <limits.h> already provides one on host builds
-#define NAME_MAX 40
-#endif
+// NOT "NAME_MAX": that is a POSIX name <limits.h> defines as 255 on newlib.
+// With an #ifndef guard the value depended on include order, so one
+// translation unit laid cable_agent_t out with 40-byte names and another with
+// 255-byte ones — the UI read every agent after the first (and every copied
+// question) at the wrong offsets. A private name cannot collide.
+#define CABLE_NAME_MAX 40
 
 // How many agents the store holds. The list is the window's ACTIVE TAB and
 // nothing else; the rest of the fleet arrives as agents.end.total.
@@ -76,25 +81,30 @@
 #define CABLE_Q_KEY_MAX    96   // answer-map key, echoed back untouched
 #define CABLE_Q_TEXT_MAX   160  // prompt text
 
+// Questions held at once. Two agents can stop to ask at the same moment; the
+// dial answers them one after the other instead of letting the second
+// overwrite the first (which then pulsed forever with nothing to answer).
+#define CABLE_Q_PENDING_MAX 3
+
 // ── stored agent row ────────────────────────────────────────────────────────
 // The wire does not carry an agent "status" enum: `state` is DERIVED from the
 // message kinds (PROTOCOL.md §6) and is one of:
 //   "idle" | "running" | "waiting" | "done" | "error"
 typedef struct {
     char id[ID_MAX];
-    char name[NAME_MAX];
+    char name[CABLE_NAME_MAX];
     char engine[12];         // claude|codex|cursor|opencode|… ; "" when unsaid
     char state[12];          // derived tile state, see above
     char summary[100];       // last status line (turn.started) or recap (summary)
     char machine_id[ID_MAX]; // which machine this agent lives on ("" if unsaid)
-    char machine[NAME_MAX];  // that machine's display name
+    char machine[CABLE_NAME_MAX];  // that machine's display name
 } cable_agent_t;
 
 // One row of the window's unread list, as `notif.replace` carries it.
 typedef struct {
     char agent_id[ID_MAX];
-    char name[NAME_MAX];
-    char machine[NAME_MAX];
+    char name[CABLE_NAME_MAX];
+    char machine[CABLE_NAME_MAX];
     char summary[100];
     bool question;           // blocked on an answer vs finished turn
 } cable_notif_t;
@@ -113,8 +123,8 @@ typedef struct {
 typedef struct {
     char agent_id[ID_MAX];
     char request_id[ID_MAX];  // the daemon's opaque id, echoed back as requestId
-    char name[NAME_MAX];      // who is asking (rides on the frame)
-    char machine[NAME_MAX];
+    char name[CABLE_NAME_MAX];      // who is asking (rides on the frame)
+    char machine[CABLE_NAME_MAX];
     int  count;
     cable_question_item_t items[CABLE_Q_MAX];
 } cable_question_t;
@@ -132,13 +142,17 @@ typedef struct {
     // `text` is the status line or recap; beep/notify policy is the UI's.
     void (*agent_event)(const char *agent_id, const char *state, const char *text,
                         bool notify, bool beep, void *ctx);
-    // Whole unread list, replayed (notif.replace). Max CABLE_NOTIF_MAX rows.
+    // The unread list changed: replayed whole (notif.replace), one row dropped
+    // (notif.seen), or a question row cleared because it was answered/closed.
+    // Always the complete current list. Max CABLE_NOTIF_MAX rows.
     void (*notif)(const cable_notif_t *items, int count, void *ctx);
-    // An agent stopped to ask. The question is already stored; the client has
-    // already sent agent.open(reason="question"). Show the question screen.
+    // An agent stopped to ask. The question is already queued; the client has
+    // already sent agent.open(reason="question"). `q` points into the
+    // client's store and is only valid during the call — the UI copies what
+    // it needs with cable_client_copy_question().
     void (*question)(const cable_question_t *q, void *ctx);
-    // The pending question was dealt with elsewhere (question.close with a
-    // matching id), or answered locally. Drop the question screen.
+    // A pending question was dealt with elsewhere (question.close with a
+    // matching id), or the session ended. The UI re-reads the queue.
     void (*question_closed)(void *ctx);
     // Transient text (toast / turn.error message).
     void (*toast)(const char *text, void *ctx);
@@ -165,15 +179,15 @@ uint32_t cable_platform_millis(void);
 // Zero all state and counters. Safe to call at boot before any other call.
 void cable_client_init(void);
 
-// Device only: allocate the store lock and start the 250 ms session task that
-// drives the hello cadence and the silence watchdog. cable_link must already
-// be running with cable_client_handle_frame as its frame callback.
-// Returns false when the task could not be created (dial keeps running,
-// showing "Not connected", rather than failing to boot).
+// Device only: allocate the store lock. Call once, after cable_client_init()
+// and BEFORE cable_link_start(): frames can arrive the moment the link runs.
+// Returns false when the lock could not be allocated.
 bool cable_client_start(void);
 
-// Drive the session machine once. The device session task calls this every
-// 250 ms (PROTOCOL.md §3.1); host tests call it directly with a fake clock.
+// Drive the session machine once (hello cadence + silence watchdog,
+// PROTOCOL.md §3.1). On the device it runs ON THE LINK READER TASK — handed
+// to cable_link_start() as its tick — so the session machine and the frame
+// handlers never race each other; host tests call it with a fake clock.
 void cable_client_poll(void);
 
 // Frame entry point — matches cable_frame_cb so it can be handed straight to
@@ -194,9 +208,26 @@ int  cable_client_agent_total(void);
 // Whether a window is open at the far end (agents.end.tab non-empty).
 bool cable_client_has_window(void);
 
-// The pending question, or NULL. Valid until cable_client_answer() with a
-// matching request id, question.close, or session down.
+// The oldest pending question, or NULL. NOT thread-safe: the store belongs
+// to the link task; host tests use it, the UI uses the copy below.
 const cable_question_t *cable_client_pending_question(void);
+
+// Copy the oldest pending question into `out` under the store lock. Returns
+// false (and leaves `out` alone) when nothing is pending.
+bool cable_client_copy_question(cable_question_t *out);
+
+// How many questions are waiting (0..CABLE_Q_PENDING_MAX).
+int  cable_client_question_count(void);
+
+// Copy the request id of the oldest pending question into `out` ("" when
+// none). Lets the UI check "is mine still first?" without copying 3 KB.
+void cable_client_question_head_id(char *out, size_t cap);
+
+// How many rows of the unread list are questions (the ring's amber pulse).
+int  cable_client_notif_question_count(void);
+
+// Copy the current unread list; returns how many rows were written.
+int  cable_client_list_notifs(cable_notif_t *out, int max);
 
 // Message-layer health. `bad` = unreadable JSON or no `t`; `unknown` =
 // well-formed but not in this build's vocabulary (a daemon running ahead,
@@ -220,6 +251,25 @@ void cable_client_send_open(const char *agent_id, const char *reason);
 
 // Answer a `question`. `request_id` is echoed byte-for-byte; `answers` is the
 // UI's own object, keyed by the exact keys the daemon asked with, travelling
-// verbatim. Clears the pending question when the id matches.
+// verbatim. Drops the matching question from the queue, clears that agent's
+// question row from the unread list, and moves its tile back to "running"
+// (the turn that stopped to ask carries on).
 void cable_client_answer(const char *agent_id, const char *request_id,
                          const cJSON *answers);
+
+// Interrupt that agent's running turn, and only that one (PROTOCOL.md §4.9).
+void cable_client_send_stop(const char *agent_id);
+
+// Touch scrollpad (PROTOCOL.md §4.13): the dial reports finger MOVEMENT for
+// the computer's window. `phase` is "down" | "move" | "up"; `dy` is device
+// pixels since the last report (positive = down the glass, 0 is never
+// elided); `v` (px/s, signed like dy) is sent only when `with_v` — i.e. on
+// "up", where it becomes the fling.
+void cable_client_send_scroll(const char *phase, int dy, int v, bool with_v);
+
+// ── utilities (exposed for host tests) ──────────────────────────────────────
+
+// snprintf-style copy that never leaves half a UTF-8 sequence at the cut:
+// a truncated "Café" must not end in a lone 0xC3 (LVGL draws garbage, and
+// cJSON would re-emit invalid UTF-8 to the daemon). Returns strlen(dst).
+size_t cable_utf8_copy(char *dst, size_t cap, const char *src);

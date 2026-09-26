@@ -1,37 +1,72 @@
 # Harness C3 — every pin and tunable lives here (SPEC.md §2). NO pin number
 # may be hardcoded in C: change wiring in menuconfig, not in the sources.
+#
+# The default board is the Sunton ESP32-2424S012C (also sold as
+# ESP32-2424S012C-I in a case): ESP32-C3-MINI-1U + GC9A01 1.28" 240x240 round
+# IPS + CST816D capacitive touch + BOOT button. "Custom wiring" keeps the
+# original hand-wired pin map (bare module + GC9A01 breakout + 2 buttons).
 
 menu "Harness C3 Configuration"
+
+    choice HARNESS_BOARD
+        prompt "Board"
+        default HARNESS_BOARD_ESP32_2424S012C
+        help
+            Selects the default pin map and panel settings. Every individual
+            value below stays overridable.
+
+        config HARNESS_BOARD_ESP32_2424S012C
+            bool "Sunton ESP32-2424S012C / -C-I (round 1.28\", CST816D touch)"
+        config HARNESS_BOARD_CUSTOM
+            bool "Custom wiring (bare ESP32-C3 + GC9A01 breakout + 2 buttons)"
+    endchoice
 
     menu "Display (GC9A01 240x240 round, SPI)"
 
         config HARNESS_PIN_SPI_SCK
             int "SPI SCK GPIO"
+            range 0 21
+            default 6 if HARNESS_BOARD_ESP32_2424S012C
             default 4
         config HARNESS_PIN_SPI_MOSI
             int "SPI MOSI (SDA) GPIO"
+            range 0 21
+            default 7 if HARNESS_BOARD_ESP32_2424S012C
             default 5
         config HARNESS_PIN_LCD_CS
             int "LCD CS GPIO"
+            range 0 21
+            default 10 if HARNESS_BOARD_ESP32_2424S012C
             default 2
-            help
-                GPIO2 is a strapping pin — CS idles high, safe at boot.
         config HARNESS_PIN_LCD_DC
             int "LCD DC GPIO"
+            range 0 21
+            default 2 if HARNESS_BOARD_ESP32_2424S012C
             default 3
+            help
+                GPIO2 is a strapping pin; as DC it idles high, safe at boot.
         config HARNESS_PIN_LCD_RST
-            int "LCD RST GPIO"
+            int "LCD RST GPIO (-1 = not wired, software reset)"
+            range -1 21
+            default -1 if HARNESS_BOARD_ESP32_2424S012C
             default 10
+            help
+                On the ESP32-2424S012C the panel reset is tied to the chip's
+                EN line, not to a GPIO: -1 makes the driver use the panel's
+                software-reset command instead.
         config HARNESS_PIN_LCD_BL
             int "LCD backlight GPIO (LEDC PWM, active high)"
+            range 0 21
+            default 3 if HARNESS_BOARD_ESP32_2424S012C
             default 6
 
         choice HARNESS_LCD_SPI_FREQ
             prompt "LCD SPI clock"
+            default HARNESS_LCD_SPI_FREQ_80M if HARNESS_BOARD_ESP32_2424S012C
             default HARNESS_LCD_SPI_FREQ_40M
             help
-                40 MHz is the safe default for hand wiring; 80 MHz works on
-                short, clean runs and halves full-frame time.
+                80 MHz is fine on the ESP32-2424S012C (on-board traces) and
+                halves full-frame time; keep 40 MHz for hand wiring.
             config HARNESS_LCD_SPI_FREQ_40M
                 bool "40 MHz"
             config HARNESS_LCD_SPI_FREQ_80M
@@ -43,29 +78,146 @@ menu "Harness C3 Configuration"
             default 40000000 if HARNESS_LCD_SPI_FREQ_40M
             default 80000000 if HARNESS_LCD_SPI_FREQ_80M
 
+        config HARNESS_LCD_MIRROR_X
+            bool "Mirror X"
+            default y
+            help
+                The esp_lcd GC9A01 driver's default scan direction draws text
+                mirrored on these modules; mirroring X makes it read
+                correctly. Untick if the picture comes out mirrored.
+        config HARNESS_LCD_MIRROR_Y
+            bool "Mirror Y"
+            default n
+            help
+                Mirror X + Mirror Y together = the picture rotated 180°
+                (e.g. a case that mounts the board upside down).
+        config HARNESS_LCD_SWAP_XY
+            bool "Swap X/Y (with a mirror: 90° rotation)"
+            default n
+        config HARNESS_LCD_INVERT_COLORS
+            bool "Invert colours (IPS GC9A01 panels need this)"
+            default y
+        config HARNESS_LCD_BGR
+            bool "BGR subpixel order"
+            default y
+
     endmenu
 
-    menu "Buttons (active-low, internal pull-ups)"
+    menu "Touch (CST816S/T/D, I2C)"
+
+        config HARNESS_TOUCH_ENABLE
+            bool "Capacitive touch panel fitted"
+            default y if HARNESS_BOARD_ESP32_2424S012C
+            default n
+
+        config HARNESS_PIN_TOUCH_SDA
+            int "Touch I2C SDA GPIO"
+            depends on HARNESS_TOUCH_ENABLE
+            range 0 21
+            default 4
+        config HARNESS_PIN_TOUCH_SCL
+            int "Touch I2C SCL GPIO"
+            depends on HARNESS_TOUCH_ENABLE
+            range 0 21
+            default 5
+        config HARNESS_PIN_TOUCH_INT
+            int "Touch INT GPIO (-1 = not wired)"
+            depends on HARNESS_TOUCH_ENABLE
+            range -1 21
+            default 0
+            help
+                Used to skip I2C traffic while nobody is touching the glass;
+                with -1 the controller is simply polled.
+        config HARNESS_PIN_TOUCH_RST
+            int "Touch RST GPIO (-1 = not wired)"
+            depends on HARNESS_TOUCH_ENABLE
+            range -1 21
+            default 1
+        config HARNESS_TOUCH_I2C_HZ
+            int "Touch I2C clock (Hz)"
+            depends on HARNESS_TOUCH_ENABLE
+            range 100000 400000
+            default 400000
+
+        config HARNESS_TOUCH_SWAP_XY
+            bool "Touch: swap X/Y"
+            depends on HARNESS_TOUCH_ENABLE
+            default n
+        config HARNESS_TOUCH_MIRROR_X
+            bool "Touch: mirror X"
+            depends on HARNESS_TOUCH_ENABLE
+            default n
+        config HARNESS_TOUCH_MIRROR_Y
+            bool "Touch: mirror Y"
+            depends on HARNESS_TOUCH_ENABLE
+            default n
+            help
+                If you rotated the picture with the Display mirror options,
+                apply the same transform here so taps land under the finger.
+
+    endmenu
+
+    menu "Buttons (active-low)"
 
         config HARNESS_PIN_BTN_A
-            int "Button A GPIO (short = next/scroll, long = confirm/yes)"
+            int "Button A GPIO (-1 = none; short = next, long = confirm)"
+            range -1 21
+            default -1 if HARNESS_BOARD_ESP32_2424S012C
             default 7
         config HARNESS_PIN_BTN_B
-            int "Button B GPIO (short = back / no-cancel)"
+            int "Button B GPIO (-1 = none; short = back, long = screen on/off)"
+            range -1 21
+            default 9 if HARNESS_BOARD_ESP32_2424S012C
             default 8
             help
-                GPIO8 is a strapping pin, pulled up — it must not be held
-                low at boot.
+                On the ESP32-2424S012C this is the BOOT button (GPIO9, has
+                an external pull-up). It is a strapping pin: holding it while
+                plugging in enters the ROM download mode — that is how you
+                force a flash, and harmless otherwise.
 
     endmenu
 
     config HARNESS_PIN_BUZZER
         int "Buzzer GPIO (-1 disables)"
+        default -1 if HARNESS_BOARD_ESP32_2424S012C
         default 1
-        range -1 48
+        range -1 21
         help
             Passive buzzer on a spare PWM-capable GPIO. -1 = no buzzer;
-            buzzer.c becomes a no-op.
+            buzzer.c becomes a no-op. The ESP32-2424S012C has no buzzer; its
+            only spare pad is IO8 (strapping pin, 10k pull-up — drive a
+            buzzer through a transistor so it stays high at reset).
+
+    menu "Screen power"
+
+        config HARNESS_BACKLIGHT_DEFAULT
+            int "Default brightness (%)"
+            range 5 100
+            default 80
+            help
+                Adjustable on the device (swipe down on the home screen);
+                the chosen value is kept in NVS.
+        config HARNESS_DIM_AFTER_S
+            int "Dim after N seconds without interaction (0 = never)"
+            range 0 3600
+            default 60
+        config HARNESS_OFF_AFTER_S
+            int "Backlight off after N seconds without interaction (0 = never)"
+            range 0 86400
+            default 600
+            help
+                A question from an agent always wakes the screen.
+
+    endmenu
+
+    choice HARNESS_UI_LANG
+        prompt "UI language"
+        default HARNESS_LANG_FR
+        config HARNESS_LANG_FR
+            bool "Français"
+        config HARNESS_LANG_EN
+            bool "English"
+    endchoice
 
     config HARNESS_MAX_AGENTS
         int "Max agents held in the store"

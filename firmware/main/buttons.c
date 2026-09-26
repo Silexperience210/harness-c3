@@ -1,6 +1,6 @@
 // Button polling: 10 ms poll, 30 ms debounce, short/long (≥600 ms). See
 // buttons.h. Pins come exclusively from Kconfig (menu "Harness C3
-// Configuration").
+// Configuration"); -1 means "not fitted".
 
 #include "buttons.h"
 #include "sdkconfig.h"
@@ -22,7 +22,7 @@ static const char *TAG = "buttons";
 #define LONG_TICKS     (LONG_MS / POLL_MS)
 
 typedef struct {
-    gpio_num_t  gpio;
+    int         gpio;
     btn_event_t short_event;
     btn_event_t long_event;
     int         level;        // accepted level, 1 = released (idle)
@@ -33,10 +33,12 @@ typedef struct {
 } button_t;
 
 static QueueHandle_t s_queue;
+static button_t      s_btns[2];
+static int           s_count;
 
 static void poll_button(button_t *b)
 {
-    const int raw = gpio_get_level(b->gpio);
+    const int raw = gpio_get_level((gpio_num_t)b->gpio);
     if (raw == b->candidate) {
         if (b->same_ticks < DEBOUNCE_TICKS) b->same_ticks++;
     } else {
@@ -68,35 +70,37 @@ static void poll_button(button_t *b)
 static void buttons_task(void *arg)
 {
     (void)arg;
-    static button_t btns[2] = {
-        {
-            .gpio = CONFIG_HARNESS_PIN_BTN_A,
-            .short_event = BTN_EVENT_A_SHORT,
-            .long_event = BTN_EVENT_A_LONG,
-        },
-        {
-            .gpio = CONFIG_HARNESS_PIN_BTN_B,
-            .short_event = BTN_EVENT_B_SHORT,
-            .long_event = BTN_EVENT_B_LONG,
-        },
-    };
-    for (int i = 0; i < 2; i++) {
-        btns[i].level = 1;
-        btns[i].candidate = 1;
-    }
     for (;;) {
-        poll_button(&btns[0]);
-        poll_button(&btns[1]);
+        for (int i = 0; i < s_count; i++) poll_button(&s_btns[i]);
         vTaskDelay(pdMS_TO_TICKS(POLL_MS));
     }
+}
+
+static void add_button(int gpio, btn_event_t short_ev, btn_event_t long_ev)
+{
+    if (gpio < 0) return;
+    button_t *b = &s_btns[s_count++];
+    b->gpio = gpio;
+    b->short_event = short_ev;
+    b->long_event = long_ev;
+    b->level = 1;
+    b->candidate = 1;
 }
 
 bool buttons_init(QueueHandle_t queue)
 {
     if (!queue) return false;
     s_queue = queue;
+    s_count = 0;
+    add_button(CONFIG_HARNESS_PIN_BTN_A, BTN_EVENT_A_SHORT, BTN_EVENT_A_LONG);
+    add_button(CONFIG_HARNESS_PIN_BTN_B, BTN_EVENT_B_SHORT, BTN_EVENT_B_LONG);
+    if (s_count == 0) {
+        ESP_LOGI(TAG, "no buttons configured");
+        return true;
+    }
 
-    const uint64_t mask = (1ULL << CONFIG_HARNESS_PIN_BTN_A) | (1ULL << CONFIG_HARNESS_PIN_BTN_B);
+    uint64_t mask = 0;
+    for (int i = 0; i < s_count; i++) mask |= 1ULL << s_btns[i].gpio;
     const gpio_config_t cfg = {
         .pin_bit_mask = mask,
         .mode = GPIO_MODE_INPUT,
@@ -113,7 +117,7 @@ bool buttons_init(QueueHandle_t queue)
         ESP_LOGE(TAG, "task create failed");
         return false;
     }
-    ESP_LOGI(TAG, "buttons on GPIO%d / GPIO%d (10 ms poll, 30 ms debounce, long >= %d ms)",
+    ESP_LOGI(TAG, "buttons: A=GPIO%d B=GPIO%d (-1 = none; 30 ms debounce, long >= %d ms)",
              CONFIG_HARNESS_PIN_BTN_A, CONFIG_HARNESS_PIN_BTN_B, LONG_MS);
     return true;
 }

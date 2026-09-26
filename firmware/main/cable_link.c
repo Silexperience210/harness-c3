@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -35,10 +36,22 @@ static const char *TAG = "cable";
 // updater depends on it, and the RAM is budgeted (SPEC.md §3).
 #define USJ_RX_BUF (32 * 1024)
 
-// TX is sized so the largest thing this link really sends — one JSON message
-// plus framing — fits in one go and the write does not block halfway through
-// a frame waiting for the host to drain.
-#define USJ_TX_BUF 2048
+// TX ring: holds the LARGEST POSSIBLE FRAME. The driver's ring is
+// all-or-nothing per write and refuses outright any single write larger than
+// itself — with the old 2048 B ring a large `answer` (4 questions ×
+// multi-select labels ≈ 2.4 KB) failed EVERY time, silently. Sized to
+// CABLE_MAX_FRAME, every frame goes in as ONE ring item: atomic on the wire,
+// so console text (routed through the driver below) can only ever land
+// between two frames, never inside one.
+//
+// The protocol allows 8 KB payloads, but the largest thing THIS firmware
+// sends is an `answer` (≤ 4 questions × one key + joined labels ≈ 2.6 KB);
+// hello/focus/scroll are under 200 B and a LOG line is capped at 512 B. So
+// outbound frames are capped at 4 KB, which halves the RAM the TX side costs
+// (encode buffer + ring) on a chip with ~320 KB in total.
+#define TX_PAYLOAD_MAX 4096
+#define TX_FRAME_MAX   (CABLE_HEADER_BYTES + TX_PAYLOAD_MAX + CABLE_CRC_BYTES)
+#define USJ_TX_BUF     (TX_FRAME_MAX + 256)
 
 // One read's worth of bytes off the port. Small on purpose: the decoder is
 // where reassembly happens; this only keeps the syscall rate sane.
@@ -70,6 +83,7 @@ static const char *TAG = "cable";
 
 static cable_decoder_t s_decoder;
 static cable_frame_cb  s_cb;
+static void          (*s_tick)(void);
 static void           *s_ctx;
 static bool            s_running;
 
@@ -79,24 +93,21 @@ static bool            s_running;
 // has a valid CRC (PROTOCOL.md §10.3).
 static SemaphoreHandle_t s_tx_lock;
 
-// 8.2 KB of BSS rather than a stack array (it would not fit) or a malloc (a
-// failed allocation mid-session is a worse outcome than a known, always-paid
-// 8 KB). Full-size so the encoder can never fail for lack of room here: a -1
-// from cable_frame_encode then means exactly one thing — the payload is over
-// the protocol's own limit.
-static uint8_t s_tx_frame[CABLE_MAX_FRAME];
+// BSS rather than a stack array (it would not fit) or a malloc (a failed
+// allocation mid-session is a worse outcome than a known, always-paid 4 KB).
+// A -1 from cable_frame_encode means exactly one thing: the payload is over
+// TX_PAYLOAD_MAX, a bug on this side (see cable_link_send).
+static uint8_t s_tx_frame[TX_FRAME_MAX];
 
 // ── log framing ─────────────────────────────────────────────────────────────
 
 static vprintf_like_t s_prev_vprintf;
-// Reentrancy guard: a log emitted from inside the sink would recurse until
-// the stack ran out.
-static volatile bool s_in_log_sink;
 
 static bool send_locked(uint8_t type, const uint8_t *payload, size_t payload_len, TickType_t wait)
 {
     int len = cable_frame_encode(type, payload, payload_len, s_tx_frame, sizeof(s_tx_frame));
     if (len < 0) return false;
+    // One write per frame: all of it or none of it (see USJ_TX_BUF).
     return usb_serial_jtag_write_bytes(s_tx_frame, (size_t)len, wait) == len;
 }
 
@@ -104,7 +115,11 @@ static int log_vprintf(const char *fmt, va_list args)
 {
     // From an ISR there is nothing safe to do here — the mutex would abort —
     // and panic/early-boot output does not come through this hook anyway.
-    if (xPortInIsrContext() || s_in_log_sink) {
+    // Reentrancy (a log emitted while THIS task holds the TX lock, e.g. by
+    // the driver itself) falls through to the plain console instead of
+    // deadlocking; another task's log simply waits its (short) turn.
+    if (xPortInIsrContext() || !s_tx_lock ||
+        xSemaphoreGetMutexHolder(s_tx_lock) == xTaskGetCurrentTaskHandle()) {
         return s_prev_vprintf ? s_prev_vprintf(fmt, args) : 0;
     }
 
@@ -112,7 +127,6 @@ static int log_vprintf(const char *fmt, va_list args)
     if (!s_running || xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(LOG_WRITE_WAIT_MS)) != pdTRUE) {
         return s_prev_vprintf ? s_prev_vprintf(fmt, args) : 0;
     }
-    s_in_log_sink = true;
     int n = vsnprintf(line, sizeof(line), fmt, args);
     if (n > 0) {
         size_t len = (size_t)n < sizeof(line) - 1 ? (size_t)n : sizeof(line) - 1;
@@ -122,7 +136,6 @@ static int log_vprintf(const char *fmt, va_list args)
         if (len > 0) send_locked(CABLE_TYPE_LOG, (const uint8_t *)line, len,
                                  pdMS_TO_TICKS(LOG_WRITE_WAIT_MS));
     }
-    s_in_log_sink = false;
     xSemaphoreGive(s_tx_lock);
     return n;
 }
@@ -148,21 +161,29 @@ static void reader_task(void *arg)
 {
     (void)arg;
     uint8_t chunk[READ_CHUNK];
+    TickType_t last_tick = 0;
     for (;;) {
         int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(READ_WAIT_MS));
-        if (n <= 0) continue;
-        // Never fails and never rejects: everything arriving here is
-        // untrusted, starts mid-stream after every boot, and the only useful
-        // response to a byte that makes no sense is to step over it.
-        cable_decoder_feed(&s_decoder, chunk, (size_t)n, s_cb, s_ctx);
+        if (n > 0) {
+            // Never fails and never rejects: everything arriving here is
+            // untrusted, starts mid-stream after every boot, and the only
+            // useful response to a byte that makes no sense is to step over it.
+            cable_decoder_feed(&s_decoder, chunk, (size_t)n, s_cb, s_ctx);
+        }
+        const TickType_t now = xTaskGetTickCount();
+        if (s_tick && (now - last_tick) >= pdMS_TO_TICKS(CABLE_LINK_TICK_MS)) {
+            last_tick = now;
+            s_tick();
+        }
     }
 }
 
-bool cable_link_start(cable_frame_cb cb, void *ctx)
+bool cable_link_start(cable_frame_cb cb, void (*tick)(void), void *ctx)
 {
     if (s_running) return true;
 
     s_cb = cb;
+    s_tick = tick;
     s_ctx = ctx;
     cable_decoder_init(&s_decoder);
 
@@ -187,8 +208,18 @@ bool cable_link_start(cable_frame_cb cb, void *ctx)
         return false;
     }
 
+    // Route the console (printf, and ESP_LOG while not framed) through the
+    // driver. Left on the default "no driver" path, console text is pushed
+    // straight into the hardware FIFO and can land in the MIDDLE of a frame
+    // the driver's ISR is sending — the peer then loses that frame. Through
+    // the driver, every write is an atomic ring-buffer item, so console text
+    // can only fall between frames. (It never blocks: the VFS drops output
+    // after one 50 ms timeout while nobody is reading.)
+    usb_serial_jtag_vfs_use_driver();
+
     if (xTaskCreate(reader_task, "cable_link", READER_STACK, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "reader task create failed — no link to the daemon");
+        usb_serial_jtag_vfs_use_nonblocking();
         usb_serial_jtag_driver_uninstall();
         vSemaphoreDelete(s_tx_lock);
         s_tx_lock = NULL;
@@ -207,7 +238,7 @@ bool cable_link_send(uint8_t type, const uint8_t *payload, size_t payload_len)
 
     xSemaphoreTake(s_tx_lock, portMAX_DELAY);
     const bool ok = send_locked(type, payload, payload_len, pdMS_TO_TICKS(WRITE_WAIT_MS));
-    const bool too_big = payload_len > CABLE_MAX_PAYLOAD;
+    const bool too_big = payload_len > TX_PAYLOAD_MAX;
     xSemaphoreGive(s_tx_lock);
 
     if (ok) return true;
@@ -215,7 +246,7 @@ bool cable_link_send(uint8_t type, const uint8_t *payload, size_t payload_len)
         // A bug on this side, and one the far end could only ever report back
         // as noise, so it has to be caught and named here.
         ESP_LOGE(TAG, "refusing to send %u-byte payload (max %d)",
-                 (unsigned)payload_len, CABLE_MAX_PAYLOAD);
+                 (unsigned)payload_len, TX_PAYLOAD_MAX);
         return false;
     }
     // DEBUG, not WARN. "Nobody is draining the port" is this device's resting

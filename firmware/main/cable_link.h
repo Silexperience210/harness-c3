@@ -29,17 +29,23 @@
 
 #include "cable_frame.h"
 
-// Install the USB-Serial-JTAG driver and start the reader task.
+// Install the USB-Serial-JTAG driver, route the console through it, and start
+// the reader task.
 //
 // `cb` is invoked once per decoded frame, ON THE READER TASK, with the
 // payload pointing into the decoder's own buffer — valid only for the
-// duration of the call; copy anything that must outlive it. Anything that
-// touches LVGL must take display_lock() first.
+// duration of the call; copy anything that must outlive it. It must never
+// touch LVGL: post to the UI task instead.
+//
+// `tick` (may be NULL) is called on the same task at least every
+// CABLE_LINK_TICK_MS, whether or not bytes arrive. The session machine runs
+// there, so it can never race the frame handlers.
 //
 // Returns false if the driver would not install, which leaves the dial
 // running with no link rather than failing to boot: a device that shows
 // "Not connected" is diagnosable from across the room, a boot loop is not.
-bool cable_link_start(cable_frame_cb cb, void *ctx);
+#define CABLE_LINK_TICK_MS 100
+bool cable_link_start(cable_frame_cb cb, void (*tick)(void), void *ctx);
 
 // Frame `payload` and write it to the port. Returns true when the whole
 // frame went out.

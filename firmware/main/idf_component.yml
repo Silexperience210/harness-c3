@@ -1,6 +1,13 @@
+## Managed components (ESP-IDF Component Manager).
+##
+## Versions are pinned EXACTLY and dependencies.lock is committed: a caret
+## range ("^9.2.0") silently resolved to LVGL 9.6 on a fresh checkout, whose
+## API and Kconfig differ from the 9.2 this firmware is written and tested
+## against. Bump deliberately, rebuild, re-test on hardware, then commit the
+## new lock file.
 dependencies:
-  # GC9A01 round-panel driver on top of esp_lcd (exists on the registry;
-  # verified v2.0.4). Provides esp_lcd_new_panel_gc9a01().
-  espressif/esp_lcd_gc9a01: "^2.0.4"
-  # LVGL v9 — see sdkconfig.defaults for the trimmed configuration.
-  lvgl/lvgl: "^9.2.0"
+  idf: ">=5.5,<5.6"
+  # GC9A01 round-panel driver on top of esp_lcd. Provides esp_lcd_new_panel_gc9a01().
+  espressif/esp_lcd_gc9a01: "==2.0.4"
+  # LVGL v9.2 — see sdkconfig.defaults for the trimmed configuration.
+  lvgl/lvgl: "==9.2.2"

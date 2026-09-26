@@ -1,8 +1,10 @@
-// Two push buttons, active-low on internal pull-ups (SPEC.md §2).
+// Up to two push buttons, active-low (SPEC.md §2). Either may be absent
+// (Kconfig pin -1): on the ESP32-2424S012C only the BOOT button exists and is
+// configured as button B; the touch panel does everything else.
 //
 // 10 ms poll, 30 ms debounce, short/long (≥600 ms) events posted to a queue
-// the UI task drains. BTN_A short = next/scroll, long = confirm/yes;
-// BTN_B short = back, on a question = no/cancel.
+// the UI task drains. BTN_A short = next, long = confirm; BTN_B short =
+// back / cancel, long = screen off / on.
 #pragma once
 
 #include <stdbool.h>
@@ -19,5 +21,5 @@ typedef enum {
 
 // Install the GPIO inputs and start the polling task. `queue` receives one
 // btn_event_t per completed press; it is owned by the caller (the UI).
-// Returns false when the task could not be created.
+// Returns true with nothing to do when no button is configured.
 bool buttons_init(QueueHandle_t queue);
