@@ -3,7 +3,6 @@ firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
-firmware/dependencies.lock
 
 # Web flasher binaries are committed by CI from build artifacts, not by hand.
 # (docs/webflasher/bin IS tracked — do not ignore it.)
@@ -11,3 +10,8 @@ firmware/dependencies.lock
 # Host test scratch
 firmware/test/host/*.o
 __pycache__
+
+# UI simulator scratch (see firmware/test/sim/.gitignore)
+firmware/test/sim/.build/
+firmware/test/sim/.lvgl/
+firmware/test/sim/out/

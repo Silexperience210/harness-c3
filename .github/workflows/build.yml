@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   # Host-side protocol tests — no ESP-IDF, just gcc + python3 (SPEC.md §7).
@@ -16,6 +17,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc python3
       - name: Run host tests
         run: bash firmware/test/host/run_tests.sh
+
+  # The REAL ui.c + cable_client.c + LVGL 9.2.2 on a virtual 240×240 panel,
+  # driven by a scripted daemon and a scripted finger (SPEC.md §7). Every
+  # outbound frame is checked; the screenshots are kept as an artifact.
+  ui-sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc python3 python3-pil
+      - name: Run the UI simulator
+        run: bash firmware/test/sim/run_sim.sh
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: firmware/test/sim/out/
+          retention-days: 14
 
   # Firmware build with the official ESP-IDF installer action (container-free:
   # job containers override the image entrypoint, which left idf.py off PATH).
@@ -33,6 +53,17 @@ jobs:
           cd firmware
           idf.py set-target esp32c3
           idf.py build
+          idf.py size
+      - name: Merged image (for esptool users)
+        run: |
+          # DIO, like the build itself: works on every ESP32-C3-MINI-1U.
+          cd firmware/build
+          python -m esptool --chip esp32c3 merge_bin -o harness-c3-merged.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0 bootloader/bootloader.bin \
+            0x8000 partition_table/partition-table.bin \
+            0xf000 ota_data_initial.bin \
+            0x20000 harness-c3.bin
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -42,13 +73,17 @@ jobs:
             firmware/build/partition_table/partition-table.bin
             firmware/build/ota_data_initial.bin
             firmware/build/harness-c3.bin
+            firmware/build/harness-c3-merged.bin
           retention-days: 14
 
   # Keep docs/webflasher/bin + manifest.json in sync on every push to main,
   # so the GitHub Pages web flasher always offers the latest main build.
   webflasher:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: firmware
+    needs: [host-tests, ui-sim, firmware]
+    concurrency:
+      group: webflasher
+      cancel-in-progress: false
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -61,13 +96,12 @@ jobs:
       - name: Copy binaries into docs/webflasher/bin
         run: |
           mkdir -p docs/webflasher/bin
-          cp /tmp/bins/bootloader.bin docs/webflasher/bin/bootloader.bin
-          cp /tmp/bins/partition-table.bin docs/webflasher/bin/partition-table.bin
-          cp /tmp/bins/ota_data_initial.bin docs/webflasher/bin/ota_data_initial.bin
-          cp /tmp/bins/harness-c3.bin docs/webflasher/bin/harness-c3.bin
+          for f in bootloader.bin partition-table.bin ota_data_initial.bin harness-c3.bin; do
+            cp "/tmp/bins/$f" "docs/webflasher/bin/$f"
+          done
       - name: Regenerate manifest.json
         run: |
-          python3 - <<'EOF'
+          python3 - <<'PY'
           import json, pathlib
           version = pathlib.Path("firmware/version.txt").read_text().strip()
           parts = [
@@ -87,20 +121,22 @@ jobs:
           }
           pathlib.Path("docs/webflasher/manifest.json").write_text(
               json.dumps(manifest, indent=2) + "\n")
-          EOF
+          PY
       - name: Commit web flasher update
         run: |
           git config user.name "harness-c3-bot"
           git config user.email "bot@users.noreply.github.com"
           git add docs/webflasher/bin docs/webflasher/manifest.json
-          git diff --cached --quiet || git commit -m "webflasher: binaries for $(cat firmware/version.txt) ($(git rev-parse --short HEAD))"
-          git push
+          git diff --cached --quiet && exit 0
+          git commit -m "webflasher: binaries for $(cat firmware/version.txt) ($(git rev-parse --short HEAD))"
+          # main may have moved while we built: replay on top, then push.
+          git pull --rebase origin main
+          git push origin HEAD:main
 
-  # Tagged releases: the 4 raw bins, a merged image for esptool users, and a
-  # source zip.
+  # Tagged releases: the 4 raw bins, the merged image and a source zip.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: firmware
+    needs: [host-tests, ui-sim, firmware]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -110,17 +146,6 @@ jobs:
         with:
           name: firmware-bins
           path: /tmp/bins
-      - name: Merge binaries
-        run: |
-          pip install esptool
-          cd /tmp/bins
-          esptool.py --chip esp32c3 merge_bin \
-            --output harness-c3-merged.bin \
-            --flash_mode qio --flash_freq 80m --flash_size 4MB \
-            0x0 bootloader.bin \
-            0x8000 partition-table.bin \
-            0xf000 ota_data_initial.bin \
-            0x20000 harness-c3.bin
       - name: Source zip
         run: git archive --format=zip --prefix=harness-c3/ -o /tmp/harness-c3-source.zip HEAD
       - name: Create release
