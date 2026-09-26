@@ -95,9 +95,10 @@ jobs:
       - name: Copy binaries into docs/webflasher/bin
         run: |
           mkdir -p docs/webflasher/bin
-          for f in bootloader.bin partition-table.bin ota_data_initial.bin harness-c3.bin; do
-            cp "/tmp/bins/$f" "docs/webflasher/bin/$f"
-          done
+          # upload-artifact keeps the build tree's sub-folders.
+          cp /tmp/bins/bootloader/bootloader.bin docs/webflasher/bin/
+          cp /tmp/bins/partition_table/partition-table.bin docs/webflasher/bin/
+          cp /tmp/bins/ota_data_initial.bin /tmp/bins/harness-c3.bin docs/webflasher/bin/
       - name: Regenerate manifest.json
         run: |
           python3 - <<'PY'
@@ -151,8 +152,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            /tmp/bins/bootloader.bin
-            /tmp/bins/partition-table.bin
+            /tmp/bins/bootloader/bootloader.bin
+            /tmp/bins/partition_table/partition-table.bin
             /tmp/bins/ota_data_initial.bin
             /tmp/bins/harness-c3.bin
             /tmp/bins/harness-c3-merged.bin
