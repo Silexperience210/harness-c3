@@ -1,0 +1,16 @@
+[Unit]
+Description=Harness — local desk for the C3 dial (the desktop app is macOS-only)
+Documentation=file://%h/.harness/harness-desk-linux.mjs
+After=harness.service
+Wants=harness.service
+
+[Service]
+Type=simple
+# %h is expanded by systemd to the user's home directory.
+# The launcher looks up the Node runtime shipped by the Harness CLI.
+ExecStart=%h/.harness/harness-desk-linux.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

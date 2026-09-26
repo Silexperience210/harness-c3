@@ -1,0 +1,17 @@
+[Unit]
+Description=Harness — machine daemon (agents in tmux) + C3 dial over USB
+Documentation=https://harness.autonomous.ai
+After=default.target
+
+[Service]
+# `harness start` in the background detaches itself: we want a foreground
+# process supervised by systemd instead — that is exactly what -f is for (the
+# logs go to stdout, hence to the journal).
+Type=simple
+ExecStart=%h/.local/bin/harness start -f
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

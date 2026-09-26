@@ -110,6 +110,10 @@ language (Français / English), max agents held.
 - `firmware/scripts/gen_fonts.sh` — regenerates the UI fonts (Latin-1,
   French typography, λ, LVGL symbols) with `lv_font_conv`.
 - `PROTOCOL.md` — the normative cable protocol. `SPEC.md` — this port.
+- `tools/dial-linux/` — **the dial on Linux**: the Harness desktop app (the only
+  thing that publishes the agents the dial may show) is macOS-only, so this
+  bridges it locally over loopback (`app_panes` + `app_swarms` on the daemon's
+  local socket), plus systemd user units and a `hermes-dial` agent launcher.
 
 ## Limits
 
@@ -188,6 +192,14 @@ maison (module nu + écran GC9A01 + 2 boutons) reste possible :
 **Premier flash** : si l'image est en miroir ou à l'envers, basculez
 *Display → Mirror X / Mirror Y* dans menuconfig ; si les touchers tombent à
 côté, appliquez la même transformation dans *Touch*.
+
+## Cadran sur Linux
+
+Le cadran n'affiche que les agents du *bureau* publié par une app connectée, et
+l'app de bureau Harness n'existe qu'en macOS : sous Linux, personne ne publie ce
+bureau et le cadran reste sur « aucun agent ». `tools/dial-linux/` le publie en
+local (loopback : `app_panes` + `app_swarms` sur la socket locale du daemon),
+avec les unités systemd et un lanceur d'agent `hermes-dial`.
 
 ## Limites
 

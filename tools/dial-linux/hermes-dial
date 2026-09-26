@@ -1,0 +1,20 @@
+#!/bin/sh
+# hermes-dial — start a HERMES agent that shows up on the Harness C3 dial.
+#
+# Two daemon rules make a plain `hermes` invisible:
+#   * it only watches tmux sessions whose name starts with "harness-"
+#     (isHarnessSession());
+#   * it identifies the CLI by PROCESS NAME ("hermes" / "hermes-agent"), and the
+#     Hermes launcher is a shell script that ends up running "python3".
+# (`harness new hermes` is not an option either: the CLI sends permissionMode
+# "auto" by default while Hermes declares none -> INVALID_PERMISSION_MODE.)
+#
+# So: tmux session named harness-*, and the CLI launched through a symlink named
+# ~/.harness/bin/hermes-agent (see harness-desk-linux README).
+set -e
+LAUNCHER="$HOME/.harness/bin/hermes-dial.sh"
+[ -x "$LAUNCHER" ] || { echo "missing $LAUNCHER" >&2; exit 1; }
+LABEL="harness-hermes-$(date +%s)-$$"
+tmux new-session -d -s "$LABEL" -x 200 -y 50 "$LAUNCHER"
+printf '%s\n' "$LABEL"
+printf 'agent visible on the dial · enter it with: tmux attach -t %s\n' "$LABEL"
