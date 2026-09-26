@@ -78,8 +78,9 @@ jobs:
 
   # Keep docs/webflasher/bin + manifest.json in sync on every push to main,
   # so the GitHub Pages web flasher always offers the latest main build.
+  # Also runnable by hand (Actions → build → Run workflow) to refresh the page.
   webflasher:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: [host-tests, ui-sim, firmware]
     concurrency:
       group: webflasher
