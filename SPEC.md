@@ -1,4 +1,4 @@
-# SPEC — Harness C3 (firmware ESP32-C3-MINI-1U + GC9A01 240×240)
+# SPEC — Harness C3 (firmware ESP32-2424S012C: ESP32-C3-MINI-1U + GC9A01 240×240 + CST816D touch)
 
 Single source of truth for the port of the Autonomous AI "Harness device" dial
 (`github.com/autonomous-ai/openharness`, MIT) to low-cost ESP32-C3 hardware.
@@ -7,72 +7,90 @@ Single source of truth for the port of the Autonomous AI "Harness device" dial
 
 A USB companion display that plugs into a computer running the Harness daemon and shows,
 at a glance, what each coding agent is doing: working / waiting for an answer / done,
-plus reading and answering agent questions from the device. No Wi-Fi, no account,
-no touch, no microphone on this hardware revision.
+plus answering agent questions, stopping a turn and scrolling the window from the
+device's touch screen. No Wi-Fi, no account, no microphone.
 
 The wire protocol is the upstream **cable** protocol (binary framing + JSON vocabulary).
-Its complete normative description lives in `/mnt/agents/output/harness-c3-spec/PROTOCOL.md`
-(extracted from upstream) — **that document wins any disagreement with this one**.
+Its complete normative description lives in `PROTOCOL.md` (extracted from upstream) —
+**that document wins any disagreement with this one**.
 
-**In scope (v1):** hello/welcome handshake, agent list (active tab), fleet total,
-notifications (`notif.replace`), questions (`question` / `question.close` / `answer`),
-turn lifecycle for UI status, focus + agent.open, log frames, graceful unknown-message
-handling, dual-slot OTA plumbing (partition table + rollback), web flasher.
+**In scope:** hello/welcome handshake, agent list (active tab, streamed + staged), fleet
+total, notifications (`notif.replace`, `notif.seen`), questions (`question` / queue of 3 /
+`question.close` / `answer`), turn lifecycle for UI status, `focus` + `agent.open`,
+`turn.stop`, touch scrollpad (`scroll`), log frames + 60 s heartbeat, graceful
+unknown-message handling, dual-slot OTA plumbing (partition table + real rollback),
+web flasher.
 
-**Out of scope (v1):** voice (no mic), machine wheel, swarms picker, touch scrollpad,
-model/effort picker, accepting daemon-pushed firmware images (upstream images target
-ESP32-S3 — accepting them is a brick risk; see §9).
+**Out of scope:** voice (no mic), machine wheel, swarms picker, model/effort picker,
+free-text answers (no keyboard), accepting daemon-pushed firmware images (upstream images
+target ESP32-S3 — accepting them is a brick risk; see §9).
 
 ## 2. Hardware target
 
+Default board: **ESP32-2424S012C** (also sold in a case as **ESP32-2424S012C-I**).
+
 | Item | Value |
 |---|---|
-| MCU | ESP32-C3-MINI-1U — RISC-V single core 160 MHz, 400 KB SRAM, 4 MB flash, native USB (USB-Serial-JTAG) on GPIO18(D−)/GPIO19(D+) |
-| Display | GC9A01 round 240×240 IPS, SPI write-only (no MISO), RGB565 |
-| Input | 2 push buttons, active-low, internal pull-ups |
-| Optional | passive buzzer on a spare PWM GPIO |
+| MCU | ESP32-C3-MINI-1U — RISC-V single core 160 MHz, 400 KB SRAM, 4 MB flash (DIO), native USB (USB-Serial-JTAG) on GPIO18(D−)/GPIO19(D+) |
+| Display | GC9A01 round 240×240 IPS, SPI write-only (no MISO), RGB565, inverted, BGR |
+| Touch | CST816D capacitive (I²C 0x15; S/T variants share the register map) |
+| Input | BOOT button (GPIO9, external pull-up); touch does everything else |
+| Power | USB-C without CC resistors: **USB-A → USB-C cable** required; IP5306 battery charger on board |
 
-Default pin map (all overridable in `menuconfig` under *Harness C3 Configuration*):
+Board pin map (Kconfig defaults for `HARNESS_BOARD_ESP32_2424S012C`, all overridable):
 
 | Signal | GPIO | Note |
 |---|---|---|
-| SPI SCK | 4 | |
-| SPI MOSI (SDA) | 5 | |
-| LCD CS | 2 | strapping pin — CS idles high, safe at boot |
-| LCD DC | 3 | |
-| LCD RST | 10 | |
-| LCD BL | 6 | LEDC PWM, active high |
-| BTN_A | 7 | short = next/scroll, long = confirm/yes |
-| BTN_B | 8 | short = back, on question = no/cancel. Strapping pin, pulled up — must not be held at boot |
-| BUZZER | 1 | optional, `-1` disables |
+| SPI SCK / MOSI | 6 / 7 | 80 MHz (on-board traces) |
+| LCD CS / DC | 10 / 2 | GPIO2 is a strapping pin; DC idles high, safe at boot |
+| LCD RST | −1 | tied to EN; the driver uses SWRESET |
+| LCD BL | 3 | LEDC PWM 5 kHz, active high, perceptual (squared) curve |
+| Touch SDA / SCL | 4 / 5 | I²C 400 kHz |
+| Touch INT / RST | 0 / 1 | INT is a hint (polling fallback), RST pulsed at boot |
+| BTN_A | −1 | not fitted on this board |
+| BTN_B | 9 | BOOT: short = back, long = screen off/on. Held while plugging in = ROM download mode |
+| BUZZER | −1 | none on this board |
+
+`HARNESS_BOARD_CUSTOM` keeps the original hand-wired map (SCK 4, MOSI 5, CS 2, DC 3,
+RST 10, BL 6, BTN_A 7, BTN_B 8, buzzer 1, SPI 40 MHz, no touch).
 
 ## 3. Firmware architecture (ESP-IDF v5.5, target `esp32c3`)
 
 ```
 main/
-├── app_main.c        # init order, task wiring, OTA validity confirm, watchdog
-├── cable_frame.c/.h  # ADAPTED from upstream (MIT — attribution header kept).
-│                     # A5 48 framing, CRC16-CCITT-FALSE, host-compilable (no ESP-IDF deps)
-├── cable_link.c/.h   # USB-Serial-JTAG transport: driver install, RX task, 32 KB ring,
-│                     # log-framing on/off, host_present()
-├── cable_client.c/.h # message layer: hello cadence, session state, agent store (max 8),
-│                     # JSON vocabulary (cJSON), unknown-message counters
-├── display.c/.h      # esp_lcd GC9A01 SPI panel (40 MHz default, 80 MHz Kconfig option),
-│                     # LVGL v9 glue: 2× 240×48 RGB565 DMA draw buffers (~45 KB), flush cb,
-│                     # esp_timer tick, backlight LEDC
-├── ui.c/.h           # screens (see §6), dark round theme, LVGL task
-├── buttons.c/.h      # 10 ms poll, debounce, short/long events → queue to UI task
-├── buzzer.c/.h       # optional LEDC beep patterns
-└── Kconfig.projbuild # all pins, SPI freq, agent count, buzzer
+├── app_main.c        # init order, identity (fw from the running image, hw incl. touch chip), OTA valid
+├── cable_frame.c/.h  # ADAPTED from upstream (MIT). A5 48 framing, CRC16-CCITT-FALSE, host-compilable
+├── cable_link.c/.h   # USB-Serial-JTAG: driver + console routed through it (frames are atomic ring
+│                     # items), 32 KB RX ring, reader task that ALSO runs the session tick
+├── cable_client.c/.h # message layer: hello cadence, session, staged agent list, question queue (3),
+│                     # unread list, JSON vocabulary (cJSON), UTF-8-safe truncation, counters
+├── display.c/.h      # esp_lcd GC9A01 + LVGL 9.2 glue: 2× 240×48 DMA buffers, flush completion by
+│                     # semaphore (no busy-spin), orientation/colour from Kconfig, backlight
+├── touch.c/.h        # CST816x over the IDF 5 I²C master driver → LVGL pointer; auto-sleep off;
+│                     # wake hook (a touch on a dark screen only wakes it)
+├── ui.c/.h           # screens (§6); the ONLY owner of LVGL, under display_lock()
+├── settings.c/.h     # NVS: brightness
+├── buttons.c/.h      # 10 ms poll, debounce, short/long; any pin may be −1
+├── buzzer.c/.h       # optional LEDC beep patterns (no-op without a buzzer)
+├── fonts/            # generated by scripts/gen_fonts.sh: Latin-1 + French typography + λ + symbols
+└── Kconfig.projbuild # board, pins, SPI, orientation, touch, screen power, language, agent count
 ```
 
-Init order: NVS → display+LVGL → UI (shows boot, then "Not connected") → buttons →
-cable_link → cable_client (starts hello cadence) → `esp_ota_mark_app_valid_cancel_rollback()`
-once all init succeeded.
+Threading: the link reader task decodes frames, runs every message handler AND the
+session machine (`cable_client_poll` as its 100 ms tick), so the session never races a
+frame. UI callbacks there only raise dirty bits (agents / notifs / questions / session)
+or queue small text events; the UI task re-reads state under the client lock and is the
+sole LVGL user. Every frame write is serialised by the TX mutex and is one ring-buffer
+item, so console text can only fall between frames.
 
-RAM budget (400 KB total): LVGL buffers ≈45 KB + LVGL heap 32 KB, decoder 8.2 KB +
-RX ring 32 KB, task stacks ≈40 KB, cJSON working set small, ≥80 KB headroom required.
-No TLS, no Wi-Fi (`CONFIG_ESP_WIFI_ENABLED=n`), no PSRAM (does not exist on C3).
+Init order: NVS → settings → display (backlight off) → touch → UI (first frame drawn,
+THEN backlight on) → buttons → buzzer → cable_client (lock) → cable_link (reader +
+tick) → `esp_ota_mark_app_valid_cancel_rollback()`.
+
+RAM (measured, v0.2.0): 173 KB static (LVGL pool 48 KB, decoder 8 KB, question queue
+9.5 KB), then at runtime draw buffers 45 KB + USB RX 32 KB / TX 4.4 KB + task stacks;
+the settings screen and the 60 s `alive` log line report free heap. No TLS, no Wi-Fi
+use, no PSRAM (does not exist on C3).
 
 Partition table (`partitions.csv`, 4 MB, dual OTA):
 ```
@@ -82,11 +100,14 @@ phy_init, data, phy,     0x11000,  0x1000
 ota_0,    app,  ota_0,   0x20000,  0x1E0000
 ota_1,    app,  ota_1,   0x200000, 0x1E0000
 ```
-App must stay < 1.875 MB: LVGL trimmed (Montserrat 14/20/28 only), no Wi-Fi/TLS stacks.
+App ≈ 745 KB of the 1.875 MB slot.
 
-`sdkconfig.defaults`: `CONFIG_IDF_TARGET="esp32c3"`, 4 MB QIO 80 MHz, CPU 160 MHz,
-console = USB_SERIAL_JTAG, FreeRTOS 1000 Hz, task WDT panic 10 s, LVGL color 16 bpp,
-dark theme, release optimization.
+`sdkconfig.defaults` (every key verified to land in the resolved sdkconfig): DIO 80 MHz,
+CPU 160 MHz, `-O2` (`COMPILER_OPTIMIZATION_PERF`), console = USB_SERIAL_JTAG, FreeRTOS
+1000 Hz, task WDT panic 10 s (the UI task subscribes), app rollback enabled, LVGL 16 bpp,
+48 KB pool (`LV_MEM_SIZE_KILOBYTES`), `LV_OS_NONE`, 20 ms refresh. Components pinned
+exactly (`lvgl/lvgl==9.2.2`, `espressif/esp_lcd_gc9a01==2.0.4`), `dependencies.lock`
+committed.
 
 ## 4. Cable protocol implementation rules
 
@@ -96,66 +117,94 @@ dark theme, release optimization.
   - **Device→daemon (MUST):** `hello` (product `"harness"`, proto 3, fw version from
     `esp_app_get_description()->version` suffixed `-c3`, device id from MAC),
     `agents.list` after welcome, `answer` (echo `request_id` byte-for-byte, answers object
-    built by UI verbatim), `focus`, `agent.open` (reason NULL or `"question"`).
-  - **Daemon→device (MUST):** `welcome`, `agents.begin`/`agents.add`/`agents.end`
-    (`.total`, `.tab`), `notif.replace`, `question`, `question.close`,
-    `turn.started`/`turn.done`/`turn.error`, `fw.offer` (see §9).
+    built by UI verbatim), `focus`, `agent.open` (reason NULL or `"question"`),
+    `pong`; with touch: `turn.stop`, `scroll` (phase down/move/up, `dy` never elided,
+    `v` only on up).
+  - **Daemon→device (MUST):** `welcome` (every keepalive is answered — only a session
+    TRANSITION moves the UI), `ping`, `agents.begin`/`agent`/`agents.end` (`.total`,
+    `.tab`; built in a staging list, swapped in at `end`, keeping each known agent's
+    derived state and last line), `notif.replace`, `notif.seen`, `question` (queue of 3,
+    dedup on id), `question.close`, `turn.started`/`turn.done`/`turn.error`, `summary`,
+    `toast`, `focus`, `fw.offer` (see §9).
   - Unknown `t` or unreadable JSON → increment counters, never drop link, never reboot.
   - Lenient parsing everywhere: missing fields fall back to safe defaults.
-- Agent store: array of 8 (screen shows one at a time anyway), fields per PROTOCOL.md
-  (id, name, engine, state, summary, machine). `state` values per PROTOCOL.md state machine.
+- Agent store: array of `HARNESS_MAX_AGENTS` (8), fields per PROTOCOL.md (id, name,
+  engine, state, summary, machine) with the protocol caps (`CABLE_NAME_MAX` 40 — not
+  POSIX `NAME_MAX`). Every string is cut on a UTF-8 boundary. An answer or
+  `question.close` moves the agent back from "waiting" to "running" and drops its
+  question row from the unread list.
 - Session: no `welcome` within hello timeout → stay "Not connected", keep retrying
   (cadence per PROTOCOL.md); link drop (host_present false) → back to "Not connected".
 
 ## 5. USB transport rules
 
-- `driver/usb_serial_jtag` install with 32 KB RX ring (matches upstream credit-window math),
+- `driver/usb_serial_jtag` install with 32 KB RX ring (matches upstream credit-window math)
+  and a TX ring that holds the largest frame this firmware sends (4 KB payload): every
+  frame is ONE ring item, and the console is routed through the driver
+  (`usb_serial_jtag_vfs_use_driver`) so console text can never land inside a frame.
   TX with timeout; write failure = "host not draining" = not-connected, never tight-loop.
 - ESP_LOG rerouted to LOG frames **only while a session is live**; otherwise plain console
   so `idf.py monitor` still works. ROM/bootloader chatter resync is the decoder's job.
 
 ## 6. UI (LVGL v9, 240×240 round, dark, low-saturation)
 
-Screens (adapted from upstream UI_FLOWS.md to 240×240 + 2 buttons):
-1. **Boot**: λ glyph + "Harness C3" + fw version.
-2. **Not connected**: cable icon + "Brancher sur un PC avec Harness" / "Plug into a Harness daemon".
-3. **Home (agent carousel)**: one agent per page — status ring (color by state:
-   grey idle / blue running / amber waiting / green done / red error), agent name (Montserrat 20),
-   engine + machine (14), last summary line (14, ellipsized). Header: machine name;
-   corner badge: fleet total from `agents.end.total`. BTN_A short = next agent
-   (sends `focus`), long = `agent.open`; BTN_B = back to home.
-4. **Question**: question text (auto-scroll or BTN_A short scrolls), per-option buttons
-   rendered as list; BTN_A short = move selection, long = confirm choice → `answer`;
-   BTN_B = dismiss without answering (no message). `question.close` clears the screen.
-5. **Notification overlay**: `notif.replace` with question=true pulses the status ring amber.
-6. **FW update**: not reachable in v1 (offers ignored, §9) — screen exists for future use.
+Screens (adapted from upstream UI_FLOWS.md to 240×240 + touch):
+1. **Boot**: λ logo + "Harness C3" + fw version; backlight comes on after the first frame.
+2. **Not connected**: USB icon, "Plug into a computer running Harness", cable hint.
+3. **Home (agent carousel)**: status ring coloured by state (grey idle / blue running /
+   amber waiting / green done / red error; blinks amber while a question waits), machine
+   name, state line (animated "…" while running), fleet badge, agent name (1–2 lines),
+   engine · machine, status line, ‹ › chevrons and page dots when there are several
+   agents, and one action chip: **? Question** (a question waits) or **Stop** (running
+   turn; first tap arms, second tap sends `turn.stop`). Swipe ←/→ = next/previous
+   (`focus`), tap the card = `agent.open` (no reason), pull ↓ = settings, push ↑ =
+   scrollpad. A swipe's release is never a tap.
+4. **Question**: one scrolling column (header "agent · n/m · +k", prompt, one finger-sized
+   button per option, ✕ / ✓ row that scrolls into view once something is chosen).
+   Multi-select toggles + ✓ joins labels with ", ". Items of one request are walked in
+   order (→ then ✓). ✕ / sideways swipe = dismiss without a message; `question.close` or
+   an answer re-reads the queue and shows the next one.
+5. **Settings**: brightness slider (live preview, saved to NVS on release), fw, touch
+   chip, free RAM, link error counters.
+6. **Scrollpad**: `scroll` down / move (≤ 33 Hz) / up with velocity; sideways swipe or ✕
+   leaves.
+7. **Toasts** (tap to dismiss): finished turns (recap), errors, confirmations.
 
-Round-panel rule: keep all critical text inside the inscribed square (~170×170 centered).
+Power: dim to ¼ after `HARNESS_DIM_AFTER_S` (60 s), off after `HARNESS_OFF_AFTER_S`
+(600 s, never while a question waits); a question or a finished turn wakes the screen; a
+touch or button press on a dark screen only wakes it; BOOT long = off/on.
+
+Round-panel rule: critical text inside the ~170 px inscribed square, controls inside the
+ring (r ≈ 110). The simulator (§7) fails any tap on a control outside the glass.
 
 ## 7. Host tests (`firmware/test/host/`)
 
-- `test_cable_frame.c` (gcc, -std=c11, Wall Werror): CRC known answer
-  ("123456789" → 0x29B1), encode→decode roundtrip, resync over garbage prefix,
-  truncated frame, oversize payload rejection, **every vector in
-  `test/vectors/cable_frame.txt`** (file copied verbatim from upstream; the generator
-  script `scripts/gen_cable_vectors.py` must regenerate it byte-identical).
-- `test_messages.c`: golden JSON tests — for each device→daemon message our code can
-  emit, assert exact `t` string + required field names against PROTOCOL.md table;
-  for each daemon→device message, feed a golden JSON (from upstream spec tests)
-  into the parser and assert the resulting struct fields.
-- `run_tests.sh`: builds both with gcc + vendored cJSON, runs, exits non-zero on failure.
-- CI runs this on every push.
+- `test/host/test_cable_frame.c` (gcc, -std=c11 -Wall -Wextra -Werror): CRC known answer,
+  roundtrip, resync, truncation, oversize rejection, **every vector** in
+  `test/vectors/cable_frame.txt` (regenerated byte-identical by
+  `scripts/gen_cable_vectors.py --check`).
+- `test/host/test_messages.c`: golden JSON for every message the device emits (hello,
+  pong, agents.list, focus, agent.open, answer, turn.stop, scroll) and state assertions
+  for every daemon→device message, incl. staged list refresh, question queue, notif.seen,
+  session down, UTF-8-safe truncation.
+- `test/host/layout_tu.c`: the shared structs have one layout whatever the include order
+  (`<limits.h>` defines `NAME_MAX` = 255 on newlib; the port uses `CABLE_NAME_MAX` = 40).
+- `test/sim/run_sim.sh`: **UI simulator** — real `ui.c` + `cable_client.c` + LVGL 9.2.2
+  on a virtual panel with a scripted daemon and finger: boot, list, stop, swipes,
+  chevrons, open, a two-item single+multi question, keepalive during a question, dismiss /
+  chip / close, free text, summary and error toasts, settings slider, scrollpad frames,
+  dim + wake, session loss (72 checks, 18 screenshots + contact sheet).
 
 ## 8. CI / CD (`.github/workflows/build.yml`)
 
-- **job `host-tests`**: ubuntu-latest, gcc + python3 → `firmware/test/host/run_tests.sh`.
-- **job `firmware`**: container `espressif/idf:v5.5` → `cd firmware && idf.py set-target esp32c3 && idf.py build` → upload `build/*.bin` artifacts.
-- **job `webflasher`** (push to main only, `contents: write`, needs firmware):
-  copy `bootloader.bin` (0x0), `partition-table.bin` (0x8000), `ota_data_initial.bin` (0xf000),
-  `harness-c3.bin` (0x20000) into `docs/webflasher/bin/`, regenerate `manifest.json`
-  (esp-web-tools format, `chipFamily: "ESP32-C3"`), commit back to main.
-- **job `release`** (tags `v*`): create GitHub Release with the 4 .bin + `harness-c3-merged.bin`
-  (esptool merge-bin for esptool users) + source zip.
+- **host-tests**: gcc + python3 → `test/host/run_tests.sh`.
+- **ui-sim**: gcc + python3-pil → `test/sim/run_sim.sh`; screenshots uploaded as an
+  artifact.
+- **firmware**: `espressif/idf-install-action` (ESP-IDF v5.5) → build + size + merged
+  image (DIO); uploads the 4 bins + `harness-c3-merged.bin`.
+- **webflasher** (push to main, after all three): copies the bins into
+  `docs/webflasher/bin/`, regenerates `manifest.json`, rebases and pushes.
+- **release** (tags `v*`): GitHub Release with the bins, the merged image and a source zip.
 
 ## 9. Firmware-update policy (anti-brick)
 
@@ -191,7 +240,9 @@ harness-c3/
 
 ## 12. Acceptance criteria
 
-1. Host tests pass (`run_tests.sh` exit 0) in the sandbox.
-2. `idf.py build` succeeds for esp32c3 (sandbox ESP-IDF v5.5, else CI is the gate).
-3. Verifier subagent confirms protocol fidelity against PROTOCOL.md (field-by-field).
-4. Repo `Silexemple/harness-c3` public on GitHub, CI green, webflasher page committed.
+1. Host tests pass (`test/host/run_tests.sh` exit 0).
+2. UI simulator passes (`test/sim/run_sim.sh` exit 0, 72 checks).
+3. `idf.py build` succeeds for esp32c3 with ESP-IDF v5.5, no warning in `main/`.
+4. CI green (host-tests, ui-sim, firmware), web flasher page and binaries committed.
+5. On hardware (ESP32-2424S012C): picture upright, taps land under the finger, a
+   question can be answered end to end.

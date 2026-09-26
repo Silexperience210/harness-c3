@@ -78,7 +78,9 @@
   <h1><span class="lambda">λ</span> Harness C3</h1>
   <p class="dim">USB companion display for the
     <a href="https://github.com/autonomous-ai/openharness">Harness</a> daemon —
-    ESP32-C3-MINI-1U + GC9A01 240×240 round panel.</p>
+    built for the <strong>ESP32-2424S012C / ESP32-2424S012C-I</strong>
+    (ESP32-C3-MINI-1U, 1.28″ GC9A01 240×240 round IPS, CST816D capacitive
+    touch).</p>
 
   <div class="flash-box">
     <esp-web-install-button manifest="manifest.json">
@@ -88,8 +90,11 @@
       <span slot="not-allowed">This page needs HTTPS or localhost to access
         the serial port.</span>
     </esp-web-install-button>
-    <p class="dim">Plug the device in with a data-capable USB-C cable, click
-      the button, pick the <code>USB JTAG/serial debug unit</code> port.</p>
+    <p class="dim">Plug the board in with a <strong>USB-A → USB-C</strong>
+      data cable (the board has no CC resistors: USB-C ↔ USB-C cables do not
+      power it), click the button, pick the <code>USB JTAG/serial debug
+      unit</code> port. If no port appears, hold <strong>BOOT</strong> while
+      plugging in.</p>
   </div>
 
   <p class="note"><strong>Browser requirements:</strong> Chrome, Edge or Opera
@@ -97,31 +102,41 @@
     localhost</strong>. Firefox and Safari cannot flash from the browser —
     use the manual method below.</p>
 
-  <h2>Wiring (default pin map)</h2>
+  <h2>Pin map (ESP32-2424S012C, fixed by the board)</h2>
   <table>
     <tr><th>Signal</th><th>GPIO</th><th>Note</th></tr>
-    <tr><td>SPI SCK</td><td>4</td><td>GC9A01 CLK</td></tr>
-    <tr><td>SPI MOSI (SDA)</td><td>5</td><td>GC9A01 DIN</td></tr>
-    <tr><td>LCD CS</td><td>2</td><td>strapping pin — CS idles high, safe at boot</td></tr>
-    <tr><td>LCD DC</td><td>3</td><td></td></tr>
-    <tr><td>LCD RST</td><td>10</td><td></td></tr>
-    <tr><td>LCD BL</td><td>6</td><td>backlight, active high</td></tr>
-    <tr><td>BTN_A</td><td>7</td><td>short = next, long = confirm</td></tr>
-    <tr><td>BTN_B</td><td>8</td><td>back / cancel — do not hold at boot</td></tr>
-    <tr><td>Buzzer (optionnel)</td><td>1</td><td><code>-1</code> in menuconfig disables it</td></tr>
+    <tr><td>LCD SCK / MOSI</td><td>6 / 7</td><td>GC9A01, SPI 80 MHz</td></tr>
+    <tr><td>LCD CS / DC</td><td>10 / 2</td><td></td></tr>
+    <tr><td>LCD RST</td><td>—</td><td>tied to EN; software reset</td></tr>
+    <tr><td>Backlight</td><td>3</td><td>LEDC PWM, dims when idle</td></tr>
+    <tr><td>Touch SDA / SCL</td><td>4 / 5</td><td>CST816D, I²C 0x15</td></tr>
+    <tr><td>Touch INT / RST</td><td>0 / 1</td><td></td></tr>
+    <tr><td>BOOT button</td><td>9</td><td>short = back, long = screen off/on</td></tr>
+    <tr><td>USB D− / D+</td><td>18 / 19</td><td>native USB-Serial-JTAG</td></tr>
   </table>
-  <p class="dim">USB is the ESP32-C3's native port (GPIO18 = D−, GPIO19 = D+).
-    All pins are overridable under <em>menuconfig → Harness C3
-    Configuration</em>.</p>
+  <p class="dim">A hand-wired variant (bare module + GC9A01 breakout + two
+    buttons) is still supported: <em>menuconfig → Harness C3 Configuration →
+    Board → Custom wiring</em>.</p>
+
+  <h2>Using it</h2>
+  <table>
+    <tr><th>Gesture</th><th>Action</th></tr>
+    <tr><td>Swipe ← / → (or tap ‹ ›)</td><td>next / previous agent</td></tr>
+    <tr><td>Tap the agent card</td><td>open that agent on the computer</td></tr>
+    <tr><td>Tap <em>Stop</em>, then <em>Confirm?</em></td><td>stop the running turn</td></tr>
+    <tr><td>Pull down</td><td>settings (brightness, diagnostics)</td></tr>
+    <tr><td>Push up</td><td>scrollpad: drag to scroll the computer's window</td></tr>
+    <tr><td>Question screen</td><td>tap option(s), then ✓ — ✕ or a sideways swipe = later</td></tr>
+  </table>
 
   <h2>Manual flashing</h2>
   <p>With <a href="https://docs.espressif.com/projects/esptool/">esptool</a>,
     using the merged image from the
-    <a href="https://github.com/Silexemple/harness-c3/releases">Releases</a>
+    <a href="https://github.com/Silexperience210/harness-c3/releases">Releases</a>
     page:</p>
   <pre><code>esptool.py --chip esp32c3 write_flash 0x0 harness-c3-merged.bin</code></pre>
   <p>Or from source with ESP-IDF v5.5:</p>
-  <pre><code>git clone https://github.com/Silexemple/harness-c3.git
+  <pre><code>git clone https://github.com/Silexperience210/harness-c3.git
 cd harness-c3/firmware
 idf.py set-target esp32c3
 idf.py build
@@ -129,7 +144,7 @@ idf.py -p /dev/ttyACM0 flash monitor</code></pre>
 
   <h2>After flashing</h2>
   <p>Plug the dial into the computer running the Harness daemon. The screen
-    shows <em>“Plug into a Harness daemon”</em> until the daemon answers the
+    shows <em>“Non connecté / Not connected”</em> until the daemon answers the
     device’s <code>hello</code>, then the agent carousel appears.</p>
 
   <p class="dim">Firmware version shown on the boot screen and reported to the
