@@ -37,32 +37,30 @@ jobs:
           path: firmware/test/sim/out/
           retention-days: 14
 
-  # Firmware build with the official ESP-IDF installer action (container-free:
-  # job containers override the image entrypoint, which left idf.py off PATH).
+  # Firmware build in Espressif's official ESP-IDF v5.5 Docker image, through
+  # espressif/esp-idf-ci-action (a plain `docker run`, so the image entrypoint
+  # that exports the IDF environment still runs — a job `container:` overrides
+  # it, and "espressif/idf-install-action" does not exist).
   firmware:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install ESP-IDF v5.5
-        uses: espressif/idf-install-action@v1
+      - name: Build + size + merged image (DIO)
+        uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5
           target: esp32c3
-      - name: Build
-        run: |
-          cd firmware
-          idf.py set-target esp32c3
-          idf.py build
-          idf.py size
-      - name: Merged image (for esptool users)
-        run: |
-          # DIO, like the build itself: works on every ESP32-C3-MINI-1U.
-          cd firmware/build
-          python -m esptool --chip esp32c3 merge_bin -o harness-c3-merged.bin \
-            --flash_mode dio --flash_freq 80m --flash_size 4MB \
-            0x0 bootloader/bootloader.bin \
-            0x8000 partition_table/partition-table.bin \
-            0xf000 ota_data_initial.bin \
+          path: firmware
+          command: >-
+            idf.py set-target esp32c3 &&
+            idf.py build &&
+            idf.py size &&
+            cd build &&
+            python -m esptool --chip esp32c3 merge_bin -o harness-c3-merged.bin
+            --flash_mode dio --flash_freq 80m --flash_size 4MB
+            0x0 bootloader/bootloader.bin
+            0x8000 partition_table/partition-table.bin
+            0xf000 ota_data_initial.bin
             0x20000 harness-c3.bin
       - name: Upload binaries
         uses: actions/upload-artifact@v4
