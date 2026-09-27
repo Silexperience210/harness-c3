@@ -343,7 +343,9 @@ def shot_frames(st, sid, dur):
             board_in = seg(t, 0.0, 0.4)
             seat = lamp.GLASS_Z + lamp.SEAT_Z - 1.0
             st.show_only({"head": hd, "shim_1mm": hd @ TR.translation_matrix([0, 0, seat - 30 * (1 - seg(t, 0.0, 0.2))]),
-                          "shade": screw(hd @ TR.translation_matrix([0, 0, lamp.SHADE_MOUTH_Z]), seg(t, 0.45, 0.95), 30, 2.0 * 3)})
+                          # the shade comes once the board is in, then screws in
+                          "shade": screw(hd @ TR.translation_matrix([0, 0, lamp.SHADE_MOUTH_Z]), seg(t, 0.45, 0.95), 30, 2.0 * 3)
+                          if t >= 0.42 else None})
             st.screen(str(SIM / "02_offline.png"), hd, lit=False, board_offset=-(1 - board_in) * 45)
             eye, tgt = [110, -120, 170], [0, 0, 40]
         elif sid == "step6":
