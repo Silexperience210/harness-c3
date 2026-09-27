@@ -22,6 +22,19 @@
 // the firmware alive (the cable link still works headless).
 bool display_init(void);
 
+// Re-applies the panel orientation (invert / swap / mirror) from Kconfig.
+//
+// The panel is write-only (the SPI bus has no MISO), so the orientation cannot
+// be read back — only written, and written again later. Two failure modes seen
+// on this clone GC9A01: it ignores the first commands while it is still waking
+// up (cold power-up), and it can latch a glitch on the SPI lines while the
+// ESP32 resets. In both cases it silently keeps its own default scan direction
+// and the picture comes out mirrored. Re-applying the values is idempotent, so
+// display_init() does it once, a slow timer repeats it over the first two
+// seconds, and the UI does it again on every screen change (a rewrite during a
+// transition is invisible).
+void display_reassert_orientation(void);
+
 // The LVGL display (NULL before display_init succeeded).
 lv_display_t *display_get(void);
 

@@ -184,6 +184,35 @@ void display_set_backlight(int percent)
 
 int display_get_backlight(void) { return s_backlight < 0 ? 0 : s_backlight; }
 
+// ── panel orientation ───────────────────────────────────────────────────────
+
+// See display.h: the panel is write-only, so the only way to be sure of its
+// scan direction is to write it, then write it again once it is certainly up.
+void display_reassert_orientation(void)
+{
+    if (!s_panel) return;
+    esp_lcd_panel_invert_color(s_panel, LCD_INVERT);
+    esp_lcd_panel_swap_xy(s_panel, LCD_SWAP_XY);
+    esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y);
+}
+
+// Repeats the orientation over the first two seconds after boot: a cold panel
+// can swallow the very first commands. The timer is left periodic and the
+// callback simply returns once the count is spent — restarting or stopping a
+// timer from its own callback is the kind of edge case not worth the risk for
+// one idle wake-up every 500 ms.
+static int s_reassert_left = 0;
+static esp_timer_handle_t s_reassert_timer = NULL;
+
+static void reassert_cb(void *arg)
+{
+    (void)arg;
+    if (s_reassert_left <= 0) return;
+    display_reassert_orientation();
+    ESP_LOGI(TAG, "orientation re-applied (%d left)", s_reassert_left - 1);
+    s_reassert_left--;
+}
+
 // ── init ────────────────────────────────────────────────────────────────────
 
 bool display_init(void)
@@ -268,9 +297,7 @@ bool display_init(void)
     }
     // IPS GC9A01 modules are inverted by default; without this every colour
     // reads as its complement.
-    esp_lcd_panel_invert_color(s_panel, LCD_INVERT);
-    esp_lcd_panel_swap_xy(s_panel, LCD_SWAP_XY);
-    esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y);
+    display_reassert_orientation();
     esp_lcd_panel_disp_on_off(s_panel, true);
 
     s_disp = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -292,6 +319,19 @@ bool display_init(void)
         esp_timer_start_periodic(tick, TICK_PERIOD_MS * 1000) != ESP_OK) {
         ESP_LOGE(TAG, "LVGL tick timer failed");
         return false;
+    }
+
+    // Repeat the orientation over the first two seconds: a cold panel can
+    // swallow the commands sent while it is still waking up (see display.h).
+    const esp_timer_create_args_t reassert_args = {
+        .callback = reassert_cb,
+        .name = "panel_orient",
+    };
+    s_reassert_left = 4;
+    if (esp_timer_create(&reassert_args, &s_reassert_timer) != ESP_OK ||
+        esp_timer_start_periodic(s_reassert_timer, 500 * 1000) != ESP_OK) {
+        ESP_LOGW(TAG, "no timer for the orientation re-assert");
+        s_reassert_left = 0;
     }
 
     ESP_LOGI(TAG, "GC9A01 %dx%d up (mirror x=%d y=%d swap=%d inv=%d bgr=%d), 2x%d B draw buffers",
