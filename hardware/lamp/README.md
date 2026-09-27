@@ -14,7 +14,7 @@ Assembly & setup video: [français](video/harness-c3-lamp-fr.mp4) ·
 
 | STL | qty | what | print as generated |
 | --- | --- | --- | --- |
-| `fit_coupon` | 1 | **print first**: the head's front 12 mm — board fit + bezel thread | flat |
+| `fit_coupon` | 1 | **print first**: the socket's front 14 mm — board fit + shade thread | flat |
 | `base` | 1 | Ø100 foot: 8-rib ballast chamber, threaded bottom, M16 socket, cable channel | upright |
 | `base_lid` | 1 | screws into the base, closes the ballast; 4 recesses for Ø10 rubber feet | flat |
 | `shoulder` | 1 | M16×2 stud + fin (1st joint); swivels on the base | stud down |
@@ -22,10 +22,11 @@ Assembly & setup video: [français](video/harness-c3-lamp-fr.mp4) ·
 | `lower_arm` | 1 | 115 mm, threaded hole at the shoulder end | flat |
 | `upper_arm` | 1 | 105 mm, threaded both ends | flat |
 | `knob` | 3 | friction-joint screws, 10×2 thread | head down |
-| `head` | 1 | holds the board; USB-C window underneath | screen side down |
-| `bezel` | 1 | screws onto the head, holds the glass rim (Ø34.4 window) | flat |
+| `head` | 1 | the socket (vintage bulb holder): board cavity, USB-C window underneath, vents, switch knob | front down |
+| `shade` | 1 | bell shade with rolled rim: its tube screws into the socket and its lip holds the glass; a 45° reflector makes the display the bulb | mouth down |
 | `shim_1mm`, `shim_2mm` | 1+1 | take up board depth (C-shaped, USB side open) | flat |
 | `cable_clip` | 3 | snap over the arms, hold the cable | flat |
+| `washer` | 3 | *optional* friction washers, one per joint (TPU or PETG): smoother, steadier joints | flat |
 
 `assembly_preview.stl` is the whole lamp posed (not for printing).
 
@@ -38,12 +39,12 @@ came in one), a **USB-A → USB-C** cable (the board has no CC resistors),
 
 ## Fit check (5 minutes, before the big prints)
 
-Print `fit_coupon` and `bezel`. The board must drop into the coupon freely
-and the bezel must screw on by hand. Then adjust `lamp.py` and regenerate:
+Print `fit_coupon` and `shade`. The board must drop into the coupon freely
+and the shade must screw into it by hand. Then adjust `lamp.py` and regenerate:
 
 - threads too tight / loose → `FIT` (0.20–0.40);
 - board tight / loose → `BOARD_D`;
-- the board rattles behind the bezel → add a shim (1, 2 or both); if even
+- the board rattles behind the shade → add a shim (1, 2 or both); if even
   that is not enough, lower `SEAT_Z`.
 
 The board's 38.5 × 37 mm outline is published; its depth (glass to the back
@@ -61,13 +62,22 @@ are there for that.
 4. **Elbow** — same with the upper arm: a knob through the lower arm into
    the upper arm's thread.
 5. **Screen** — board into the head, **USB-C facing the window underneath**,
-   shim if needed, screw the bezel on. Plug the cable in through the window.
+   shim if needed, plug the cable in through the window, then screw the
+   shade in: its lip holds the glass.
 6. **Head** — against the upper arm, last knob through the head's tab. Clip
    the cable along the arms, lay it in the base's top channel, out the back.
 
 A knob tightened = the joint holds; loosened a quarter turn = it moves.
 Then flash (web flasher) and plug into the computer running Harness — see
 the main README.
+
+## Checking the design
+
+`python3 lamp.py --check` reviews it in software and exits 1 on a problem:
+collisions in the assembled pose, every printed thread pair (no contact at
+`FIT`), the USB-C plug's path into the socket at every plausible port depth,
+the flat ceilings of each part in print orientation (all must be short
+bridges), and the centre of mass over the base with and without ballast.
 
 ## Regenerating
 
@@ -96,7 +106,7 @@ généré par [`lamp.py`](lamp.py). Vidéo de montage :
 
 **Pièces** : 13 impressions sans support (tableau ci-dessus) — pied, couvercle
 de lest, épaule (tige M16), contre-écrou, bras inférieur 115 mm, bras
-supérieur 105 mm, 3 molettes, tête, bague, 2 cales, 3 clips de câble, et la
+supérieur 105 mm, 3 molettes, culot, abat-jour, 2 cales, 3 clips de câble, et la
 pièce de test. **À prévoir** : la carte ESP32-2424S012C (nue, sortie de son
 boîtier si elle en a un), un câble **USB-A → USB-C**, ~150 g de lest,
 éventuellement 4 patins Ø10.
@@ -104,8 +114,8 @@ boîtier si elle en a un), un câble **USB-A → USB-C**, ~150 g de lest,
 **Impression** : PLA ou PETG, couches 0,2 mm, 4 périmètres, remplissage 30 %
 (pied : 40 %), buse 0,4. Filetages à flancs 45°, jeu radial 0,30 mm (`FIT`).
 
-**Test d'ajustement d'abord** : imprimez `fit_coupon` et `bezel`. La carte
-doit tomber dedans sans forcer, la bague se visser à la main. Sinon, réglez
+**Test d'ajustement d'abord** : imprimez `fit_coupon` et `shade`. La carte
+doit tomber dedans sans forcer, l'abat-jour s'y visser à la main. Sinon, réglez
 `FIT` (filetages), `BOARD_D` (diamètre), et ajoutez des cales si la carte
 bouge (la profondeur de la carte n'est pas publiée : `SEAT_Z = 9,5` est une
 estimation). Puis `python3 lamp.py`.
@@ -119,7 +129,9 @@ estimation). Puis `python3 lamp.py`.
    molette à travers l'épaule.
 4. **Coude** — idem avec le bras supérieur.
 5. **Écran** — carte dans la tête, **USB-C face à la fenêtre du dessous**,
-   cale si besoin, vissez la bague ; branchez le câble par la fenêtre.
+   cale si besoin, branchez le câble par la fenêtre, puis vissez l'abat-jour :
+   son rebord intérieur tient la vitre. Rondelles de friction (option, TPU)
+   entre les plaques de chaque articulation.
 6. **Tête** — contre le bras supérieur, dernière molette. Clipsez le câble
    le long des bras, couchez-le dans la gorge du pied, sortie à l'arrière.
 

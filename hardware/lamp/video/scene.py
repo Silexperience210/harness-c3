@@ -21,7 +21,7 @@ BONE = [0.86, 0.84, 0.80, 1.0]
 COLORS = {
     "base": GRAPHITE, "base_lid": GRAPHITE, "jam_nut": ORANGE, "shoulder": GRAPHITE,
     "lower_arm": GRAPHITE, "upper_arm": GRAPHITE, "knob": ORANGE, "head": GRAPHITE,
-    "bezel": ORANGE, "shim_1mm": BONE, "shim_2mm": BONE, "cable_clip": ORANGE, "fit_coupon": BONE,
+    "shade": ORANGE, "washer": BONE, "shim_1mm": BONE, "shim_2mm": BONE, "cable_clip": ORANGE, "fit_coupon": BONE,
 }
 
 _cache = {}
@@ -130,4 +130,4 @@ def assembled(pose=None):
 
 
 def screen_tf(P):
-    return P["head"] @ trimesh.transformations.translation_matrix([0, 0, 0.0])
+    return P["head"] @ trimesh.transformations.translation_matrix([0, 0, lamp.GLASS_Z])

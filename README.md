@@ -48,8 +48,9 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 ## Desk lamp
 
 `hardware/lamp/` — a 3D-printable articulated desk lamp whose bulb is the
-dial: 13 parts, no supports, printed screw joints, the display held by a
-threaded bezel, plus a short assembly & setup video (FR/EN). See
+dial: 13 parts, no supports, printed screw joints, a vintage bell shade
+whose reflector turns the display into the bulb, plus a short assembly &
+setup video (FR/EN). See
 [hardware/lamp/README.md](hardware/lamp/README.md).
 
 ## Hardware
@@ -190,8 +191,9 @@ faire défiler la fenêtre.
 ## Lampe de bureau
 
 `hardware/lamp/` : une lampe articulée imprimable dont l'ampoule est le
-cadran — 13 pièces sans support, articulations vissées imprimées, écran
-tenu par une bague filetée, et une courte vidéo de montage (FR/EN). Voir
+cadran — 13 pièces sans support, articulations vissées imprimées, abat-jour
+vintage en cloche dont le réflecteur fait de l'écran l'ampoule, et une
+courte vidéo de montage (FR/EN). Voir
 [hardware/lamp/README.md](hardware/lamp/README.md).
 
 ## Matériel et câble

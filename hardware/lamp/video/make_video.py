@@ -56,8 +56,8 @@ SCENES = [
          say={"fr": "Étape quatre : même principe au coude, avec le bras supérieur et la deuxième molette.",
               "en": "Step four: same at the elbow, with the upper arm and the second knob."}),
     dict(id="step5", min=8, step=5, title={"fr": "L'écran dans la tête", "en": "Screen into the head"},
-         say={"fr": "Étape cinq : glissez la carte dans la tête, port USB-C face à la fenêtre du dessous. Ajoutez une cale si elle bouge, puis vissez la bague.",
-              "en": "Step five: slide the board into the head, USB-C port facing the window underneath. Add a shim if it rattles, then screw the bezel on."}),
+         say={"fr": "Étape cinq : glissez la carte dans la tête, port USB-C face à la fenêtre du dessous. Ajoutez une cale si elle bouge, puis vissez l'abat-jour : c'est lui qui tient l'écran.",
+              "en": "Step five: slide the board into the head, USB-C port facing the window underneath. Add a shim if it rattles, then screw the shade in: it holds the screen."}),
     dict(id="step6", min=8, step=6, title={"fr": "Tête et câble", "en": "Head and cable"},
          say={"fr": "Étape six : fixez la tête au bras supérieur avec la dernière molette, branchez le câble, et clipsez-le le long des bras jusqu'à la gorge du pied.",
               "en": "Step six: attach the head to the upper arm with the last knob, plug in the cable, and clip it along the arms down to the channel in the base."}),
@@ -168,7 +168,7 @@ class Studio:
         key = "_disc:" + png
         if key not in self.nodes:
             self.nodes[key] = self.sc.add(scene.screen_disc(png), pose=self.PARK)
-        base = head_tf @ TR.translation_matrix([0, 0, board_offset])
+        base = head_tf @ TR.translation_matrix([0, 0, lamp.GLASS_Z + board_offset])
         self.sc.set_pose(self.nodes["_board"], base @ TR.translation_matrix([0, 0, 4.6]))
         self.sc.set_pose(self.nodes[key], base @ TR.translation_matrix([0, 0, 0.25]))
         if lit:
@@ -233,7 +233,7 @@ def orbit(t, radius, height, a0, a1, target):
 def cable_points(P):
     """USB cable: out of the head's underside window, under the upper arm,
     along the lower arm, into the base channel and off the back of the desk."""
-    pts = [P["head"] @ np.array([-24.0, 0, 7.0, 1.0]), P["head"] @ np.array([-34.0, 0, 9.0, 1.0])]
+    pts = [P["head"] @ np.array([-24.0, 0, lamp.GLASS_Z + 6.5, 1.0]), P["head"] @ np.array([-34.0, 0, lamp.GLASS_Z + 8.5, 1.0])]
     pts = [p[:3] for p in pts]
     S, E, Hh = P["_points"]["S"], P["_points"]["E"], P["_points"]["H"]
 
@@ -269,11 +269,11 @@ def clip_tfs(P):
 
 def layout_parts():
     """Every printable part laid out flat on the desk, as it comes off the printer."""
-    spots = [("base", -150, -60), ("base_lid", -150, 70), ("head", -30, 70), ("bezel", 60, 75),
+    spots = [("base", -150, -60), ("base_lid", -150, 70), ("head", -30, 70), ("shade", 55, 95),
              ("shoulder", 50, -10), ("jam_nut", 110, -10), ("lower_arm", -60, -95), ("upper_arm", -60, -140),
              ("knob#0", 110, 40), ("knob#1", 140, 40), ("knob#2", 170, 40), ("cable_clip#0", 150, -70),
              ("cable_clip#1", 170, -70), ("cable_clip#2", 190, -70), ("shim_1mm", 130, 110),
-             ("shim_2mm", 175, 110), ("fit_coupon", 20, 150)]
+             ("shim_2mm", 175, 110), ("fit_coupon", -60, 165)]
     return {n: TR.translation_matrix([x, y, 0]) for n, x, y in spots}
 
 
@@ -339,18 +339,19 @@ def shot_frames(st, sid, dur):
             eye, tgt = [150, 280, 190], [0, 0, 130]
         elif sid == "step5":
             # the head alone, on the desk, screen up toward the camera
-            hd = TR.translation_matrix([0, 0, 47]) @ TR.rotation_matrix(math.pi, [1, 0, 0]) @ TR.rotation_matrix(math.pi / 2, [0, 0, 1])
+            hd = TR.translation_matrix([0, 0, 52.4]) @ TR.rotation_matrix(math.pi, [1, 0, 0]) @ TR.rotation_matrix(math.pi / 2, [0, 0, 1])
             board_in = seg(t, 0.0, 0.4)
-            st.show_only({"head": hd, "shim_1mm": hd @ TR.translation_matrix([0, 0, lamp.SEAT_Z + 0.02 - 30 * (1 - seg(t, 0.0, 0.2))]) if t > 0.0 else None,
-                          "bezel": screw(hd @ TR.translation_matrix([0, 0, -1.4]), seg(t, 0.45, 0.95), 30, 2.0 * 3)})
+            seat = lamp.GLASS_Z + lamp.SEAT_Z - 1.0
+            st.show_only({"head": hd, "shim_1mm": hd @ TR.translation_matrix([0, 0, seat - 30 * (1 - seg(t, 0.0, 0.2))]),
+                          "shade": screw(hd @ TR.translation_matrix([0, 0, lamp.SHADE_MOUTH_Z]), seg(t, 0.45, 0.95), 30, 2.0 * 3)})
             st.screen(str(SIM / "02_offline.png"), hd, lit=False, board_offset=-(1 - board_in) * 45)
             eye, tgt = [110, -120, 170], [0, 0, 40]
         elif sid == "step6":
-            show = {k: tf for k, tf in parts.items() if k not in ("head", "bezel", "knob_head")}
+            show = {k: tf for k, tf in parts.items() if k not in ("head", "shade", "knob_head")}
             head_t = seg(t, 0.0, 0.35)
             hd = slide(P["head"], head_t, [0, -60, -10])
             show["head"] = hd
-            show["bezel"] = hd @ TR.translation_matrix([0, 0, -1.4])
+            show["shade"] = hd @ TR.translation_matrix([0, 0, lamp.SHADE_MOUTH_Z])
             show["knob_head"] = screw(parts["knob_head"], seg(t, 0.35, 0.6), 40, 6.0)
             clips = clip_tfs(P)
             for j, (k, tf) in enumerate(clips.items()):
