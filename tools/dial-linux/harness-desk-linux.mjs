@@ -21,6 +21,11 @@
 //   {"type":"dial_open","payload":{"machineId","agentId","reason"?}}
 // On macOS the app opens a tile. Here we open a terminal attached to the
 // agent's tmux session (or bring it forward if one is already attached).
+// The other window frames get the same treatment:
+//   dial_focus   the card on the dial changed  -> target of the scrollpad
+//   dial_scroll  the dial used as a touchpad   -> tmux copy-mode scrolling
+//   dial_forked  the dial's Fork made an agent -> open its terminal
+//   dial_swarm / dial_status                   -> logged
 // Nothing leaves the machine.
 //
 // Usage: node harness-desk-linux.mjs
@@ -40,6 +45,7 @@ let agentIds = [];
 let sentAt = 0;
 let wsStartedAt = 0;   // when the current socket attempt began
 let panes = new Map(); // agentId -> tmux pane (e.g. "%12"), from /api/status
+let target = "";       // the agent the dial is showing: what the scrollpad scrolls
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -91,6 +97,7 @@ async function terminalCommand(session) {
 const lastOpen = new Map(); // session -> ms: a double tap must not open two windows
 
 async function openAgent(agentId, reason) {
+  if (reason !== "question") target = agentId;
   const pane = panes.get(agentId);
   if (!pane) return log("open", String(agentId).slice(0, 8), "· no tmux pane known for this agent");
   const session = await run("tmux", ["display-message", "-p", "-t", pane, "#{session_name}"]);
@@ -161,6 +168,81 @@ function publish(force = false) {
   });
 }
 
+// ── dial_focus: the dial now shows this agent ──────────────────────────────
+// Remembered as the scrollpad's target; its pane is selected inside its own
+// tmux session (no window is raised: a swipe must not steal the desktop).
+async function focusAgent(agentId) {
+  target = agentId;
+  const pane = panes.get(agentId);
+  if (pane) await tmux(["select-pane", "-t", pane]);
+}
+
+// ── dial_scroll: the dial is a touchpad ─────────────────────────────────────
+// PROTOCOL 4.13: phase down/move/up, dy in device px since the last report
+// (positive = the finger moved DOWN the glass), v in px/s on up (the fling).
+// Natural scrolling, like a phone: a finger moving down pulls older lines
+// into view (tmux scroll-up). copy-mode -e leaves copy mode by itself once
+// scrolled back to the bottom.
+const PX_PER_LINE = 12;          // a full stroke across the 240 px glass ≈ 20 lines
+let carry = 0;                   // sub-line travel kept between reports
+let fling = null;
+
+// tmux calls are chained so the steps of a stroke never overtake each other.
+let chain = Promise.resolve();
+function tmux(args) {
+  chain = chain.then(() => run("tmux", args));
+  return chain;
+}
+
+function scrollLines(pane, lines) {
+  if (!lines) return;
+  const verb = lines > 0 ? "scroll-up" : "scroll-down";
+  tmux(["copy-mode", "-e", "-t", pane, ";", "send-keys", "-t", pane, "-X", "-N", String(Math.abs(lines)), verb]);
+}
+
+function stopFling() {
+  if (fling) clearInterval(fling);
+  fling = null;
+}
+
+function scroll(phase, dy, v) {
+  const agentId = target && panes.has(target) ? target : [...panes.keys()][0];
+  const pane = agentId && panes.get(agentId);
+  if (!pane) return;
+  if (phase === "down") {
+    stopFling();
+    carry = 0;
+    return;
+  }
+  carry += Number(dy) || 0;
+  const lines = Math.trunc(carry / PX_PER_LINE);
+  carry -= lines * PX_PER_LINE;
+  scrollLines(pane, lines);
+  if (phase !== "up" || Math.abs(Number(v) || 0) < 200) return;
+  // The fling: keep coasting with the lift-off speed, decaying.
+  let speed = Math.max(-4000, Math.min(4000, Number(v)));
+  let acc = 0;
+  stopFling();
+  fling = setInterval(() => {
+    acc += speed * 0.04;
+    const n = Math.trunc(acc / PX_PER_LINE);
+    acc -= n * PX_PER_LINE;
+    scrollLines(pane, n);
+    speed *= 0.86;
+    if (Math.abs(speed) < 120) stopFling();
+  }, 40);
+}
+
+// ── dial_forked: the dial's Fork opened a new agent ─────────────────────────
+// Its pane is not in the last poll yet: ask the daemon again for a few seconds.
+async function openForked(agentId) {
+  for (let i = 0; i < 8 && !panes.has(agentId); i++) {
+    await refresh().catch(() => {});
+    if (!panes.has(agentId)) await new Promise((r) => setTimeout(r, 750));
+  }
+  return openAgent(agentId);
+}
+
 function connect() {
   ws = new WebSocket(WS_URL);
   wsStartedAt = Date.now();
@@ -177,9 +259,27 @@ function connect() {
     } catch {
       return;
     }
-    if (frame.type === "dial_status") log("dial:", text.slice(0, 160));
-    else if (frame.type === "dial_open" && typeof frame.payload?.agentId === "string") {
-      openAgent(frame.payload.agentId, frame.payload.reason).catch((err) => log("open failed:", err.message));
+    const p = frame.payload || {};
+    const fail = (err) => log(frame.type, "failed:", err.message);
+    switch (frame.type) {
+      case "dial_status":
+        log("dial:", text.slice(0, 160));
+        break;
+      case "dial_open":
+        if (typeof p.agentId === "string") openAgent(p.agentId, p.reason).catch(fail);
+        break;
+      case "dial_focus":
+        if (typeof p.agentId === "string") focusAgent(p.agentId).catch(fail);
+        break;
+      case "dial_scroll":
+        if (["down", "move", "up"].includes(p.phase)) scroll(p.phase, p.dy, p.velocity);
+        break;
+      case "dial_forked":
+        if (typeof p.agentId === "string") openForked(p.agentId).catch(fail);
+        break;
+      case "dial_swarm":
+        log("dial: tab", String(p.swarmId));
+        break;
     }
   };
   ws.onclose = (event) => {
@@ -201,6 +301,14 @@ function ensureSocket() {
     if (ws) ws.close();
   } catch {}
   connect();
+}
+
+async function refresh() {
+  const state = await status();
+  if (!machineId) machineId = state.machineId;
+  const live = (state.sessions || []).filter((s) => s.engine && s.engine !== "terminal");
+  panes = new Map(live.filter((s) => s.tmuxPane).map((s) => [s.id, s.tmuxPane]));
+  return live;
 }
 
 async function loop() {

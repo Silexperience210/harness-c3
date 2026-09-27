@@ -118,6 +118,19 @@ systemctl --user edit harness-desk
 # Environment="HARNESS_DIAL_OPEN=wezterm start -- tmux attach -t {session}"
 ```
 
+## The other gestures
+
+| on the dial | the daemon sends the window | the bridge does |
+| --- | --- | --- |
+| tap a card | `dial_open` | opens / raises the agent's terminal (above) |
+| swipe to a card | `dial_focus` | makes it the scrollpad's target, selects its pane (no window raised) |
+| scrollpad (push ↑ on home) | `dial_scroll` | scrolls that agent's tmux history: natural direction (finger down = older lines), 12 px of travel per line, the lift-off speed coasts on; back at the bottom, tmux leaves copy mode by itself |
+| Fork | `dial_forked` | opens the new agent's terminal as soon as the daemon lists it |
+| tab pick | `dial_swarm` | logged (one tab on Linux) |
+
+Stop, answers and the turn itself are carried out by the daemon: they work
+without any help from the bridge.
+
 **Nothing opens?** `journalctl --user -u harness-desk -f`, tap a card:
 
 - `no DISPLAY/WAYLAND_DISPLAY` → the user service cannot reach your desktop:
