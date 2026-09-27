@@ -130,11 +130,17 @@ class Studio:
                                                           smooth=False)
         return self.meshes[key]
 
+    # Nodes are parked far below the desk rather than removed, and meshes are
+    # created once: the scene itself stays constant. (The pyrender + PyOpenGL
+    # 3.1.10 + OSMesa stack still leaks per render() call, 30–65 MB a frame,
+    # shadows or not — hence the chunked rendering in cmd_render.)
+    PARK = TR.translation_matrix([0, 0, -50000.0])
+
     def set(self, name, tf):
-        """Show part `name` at `tf` (None hides it)."""
+        """Show part `name` at `tf` (None parks it out of sight)."""
         if tf is None:
             if name in self.nodes:
-                self.sc.remove_node(self.nodes.pop(name))
+                self.sc.set_pose(self.nodes[name], self.PARK)
             return
         if name in self.nodes:
             self.sc.set_pose(self.nodes[name], tf)
@@ -143,47 +149,49 @@ class Studio:
 
     def show_only(self, parts):
         for n in list(self.nodes):
-            if n not in parts:
+            if n not in parts and not n.startswith("_"):
                 self.set(n, None)
         for n, tf in parts.items():
-            self.set(n, tf)
+            if tf is not None:
+                self.set(n, tf)
 
     def screen(self, png, head_tf, lit=True, board_offset=0.0):
         """The display on the head (png) — or None to hide it."""
-        for k in ("_board", "_disc"):
-            if k in self.nodes:
-                self.sc.remove_node(self.nodes.pop(k))
+        if "_board" not in self.nodes:
+            self.nodes["_board"] = self.sc.add(self.board, pose=self.PARK)
+        for k in [k for k in self.nodes if k.startswith("_disc:")]:
+            self.sc.set_pose(self.nodes[k], self.PARK)
         self.spot_light.intensity = 0.0
         if png is None:
+            self.sc.set_pose(self.nodes["_board"], self.PARK)
             return
-        if png not in self.screens:
-            self.screens[png] = scene.screen_disc(png)
+        key = "_disc:" + png
+        if key not in self.nodes:
+            self.nodes[key] = self.sc.add(scene.screen_disc(png), pose=self.PARK)
         base = head_tf @ TR.translation_matrix([0, 0, board_offset])
-        self.nodes["_board"] = self.sc.add(self.board, pose=base @ TR.translation_matrix([0, 0, 4.6]))
-        self.nodes["_disc"] = self.sc.add(self.screens[png], pose=base @ TR.translation_matrix([0, 0, 0.25]))
+        self.sc.set_pose(self.nodes["_board"], base @ TR.translation_matrix([0, 0, 4.6]))
+        self.sc.set_pose(self.nodes[key], base @ TR.translation_matrix([0, 0, 0.25]))
         if lit:
             self.spot_light.intensity = 30000.0
             self.sc.set_pose(self.spot, base @ TR.translation_matrix([0, 0, -2]))
 
     def cable(self, points):
-        if "_cable" in self.nodes:
-            self.sc.remove_node(self.nodes.pop("_cable"))
+        for k in [k for k in self.nodes if k.startswith("_cable:")]:
+            self.sc.set_pose(self.nodes[k], self.PARK)
         if points is None:
             return
-        key = tuple(np.round(np.asarray(points, float).ravel(), 2))
-        if key in self.cables:
-            self.nodes["_cable"] = self.sc.add(self.cables[key])
-            return
-        segs = []
-        for a, b in zip(points[:-1], points[1:]):
-            if np.linalg.norm(np.subtract(b, a)) < 0.5:
-                continue
-            segs.append(trimesh.creation.cylinder(radius=1.9, segment=[a, b], sections=14))
-            segs.append(trimesh.creation.icosphere(1, radius=1.9).apply_translation(b))
-        m = trimesh.util.concatenate(segs)
-        self.cables[key] = pyrender.Mesh.from_trimesh(
-            m, material=scene.material([0.05, 0.05, 0.055, 1], 0.5), smooth=True)
-        self.nodes["_cable"] = self.sc.add(self.cables[key])
+        key = "_cable:" + str(hash(tuple(np.round(np.asarray(points, float).ravel(), 2))))
+        if key not in self.nodes:
+            segs = []
+            for a, b in zip(points[:-1], points[1:]):
+                if np.linalg.norm(np.subtract(b, a)) < 0.5:
+                    continue
+                segs.append(trimesh.creation.cylinder(radius=1.9, segment=[a, b], sections=14))
+                segs.append(trimesh.creation.icosphere(1, radius=1.9).apply_translation(b))
+            mesh = pyrender.Mesh.from_trimesh(trimesh.util.concatenate(segs),
+                                              material=scene.material([0.05, 0.05, 0.055, 1], 0.5), smooth=True)
+            self.nodes[key] = self.sc.add(mesh, pose=self.PARK)
+        self.sc.set_pose(self.nodes[key], np.eye(4))
 
     def render(self, eye, target):
         self.sc.set_pose(self.cam, scene.look_at(eye, target))
@@ -377,27 +385,40 @@ def shot_frames(st, sid, dur):
             eye, tgt = [420, 170, 200], center
         img = st.render(eye, tgt)
         img.save(WORK / "3d" / sid / f"{i:04d}.png")
-        # pyrender + OSMesa leak ~70 MB per frame here: render in short-lived
-        # processes (MAXFRAMES each, exit code 3 = "more to do", RESUME=1).
+        # MAXFRAMES=N: stop after N frames with exit code 3 ("more to do");
+        # cmd_render reruns with RESUME=1 until done. Unset = no limit.
         global _rendered
         _rendered += 1
-        if _rendered >= int(os.environ.get("MAXFRAMES", "0") or 10 ** 9):
+        limit = int(os.environ.get("MAXFRAMES") or 0)
+        if limit and _rendered >= limit:
             sys.exit(3)
 
 
 _rendered = 0
 
 
-def cmd_render(only=None):
+def cmd_render_chunk(only=None):
     (WORK / "3d").mkdir(parents=True, exist_ok=True)
     d = durations()
     st = Studio()
-    for s in SCENES:
-        if only and s["id"] not in only:
+    for s_ in SCENES:
+        if only and s_["id"] not in only:
             continue
-        (WORK / "3d" / s["id"]).mkdir(parents=True, exist_ok=True)
-        shot_frames(st, s["id"], d[s["id"]])
-        print("rendered", s["id"], flush=True)
+        (WORK / "3d" / s_["id"]).mkdir(parents=True, exist_ok=True)
+        shot_frames(st, s_["id"], d[s_["id"]])
+        print("rendered", s_["id"], flush=True)
+
+
+def cmd_render(only=None):
+    """Renders in short-lived processes of CHUNK frames (the GL stack leaks
+    per frame), resuming where the previous one stopped."""
+    env = dict(os.environ, RESUME="1", MAXFRAMES=os.environ.get("CHUNK", "30"))
+    while True:
+        rc = subprocess.run([sys.executable, __file__, "render-chunk", *(only or [])], env=env).returncode
+        if rc == 0:
+            return
+        if rc != 3:
+            sys.exit(f"render failed (exit {rc})")
 
 
 # ── voice ───────────────────────────────────────────────────────────────────
@@ -438,7 +459,9 @@ def overlay(img, s, lang, t):
     a = int(255 * fade)
     # title chip
     title = s["title"][lang]
-    if "step" in s:
+    if s["id"] == "flash":
+        pass                                   # the slide below carries the title
+    elif "step" in s:
         badge = ("ÉTAPE" if lang == "fr" else "STEP") + f" {s['step']}/6"
         d.rounded_rectangle([40, 36, 40 + 16 + d.textlength(badge, font=font(22)), 76], 10,
                             fill=(255, 107, 20, a))
@@ -460,7 +483,7 @@ def overlay(img, s, lang, t):
             d.text((86, y + 5), str(k + 1), font=font(18), fill=(10, 10, 12))
             d.text((122, y), ln, font=font(28, k != 0) if k else font(30), fill=(225, 230, 236))
             y += 70
-        boot = Image.open(SIM / "01_boot.png").resize((250, 250))
+        boot = Image.open(SIM / "02_offline.png").resize((250, 250))   # what it shows once flashed
         m = Image.new("L", boot.size, 0)
         ImageDraw.Draw(m).ellipse([0, 0, 249, 249], fill=255)
         img.paste(boot, (960, 380), m)
@@ -515,6 +538,8 @@ if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
     if what in ("voice", "all"):
         cmd_voice()
+    if what == "render-chunk":
+        cmd_render_chunk(sys.argv[2:] or None)
     if what in ("render", "all"):
         cmd_render(sys.argv[2:] or None)
     if what in ("compose", "all"):
