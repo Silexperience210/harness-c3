@@ -117,6 +117,10 @@ void display_set_backlight(int percent)
 }
 int display_get_backlight(void) { return s_backlight; }
 
+// The host framebuffer is already in the intended frame and there is no panel
+// to re-orient, so the device's boot-time re-assert is a no-op here.
+void display_reassert_orientation(void) {}
+
 // PPM (P6) of what the round panel shows: pixels outside the circle are
 // painted as the bezel so the screenshot reads like the device.
 bool sim_screenshot(const char *path)
