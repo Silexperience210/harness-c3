@@ -407,7 +407,13 @@ int main(int argc, char **argv)
 
     lv_mem_monitor_t mon;
     lv_mem_monitor(&mon);
-    printf("sim: %d checks, %d failures, %d screenshots (LVGL pool %u%% used, max %u B on a 64-bit host)\n",
-           s_checks, s_fail, s_shot, (unsigned)mon.used_pct, (unsigned)mon.max_used);
+    printf("sim: %d checks, %d failures, %d screenshots (LVGL pool: max %u of %u B = %u%%, %d-bit build)\n",
+           s_checks, s_fail, s_shot, (unsigned)mon.max_used, (unsigned)LV_MEM_SIZE,
+           (unsigned)(100u * mon.max_used / LV_MEM_SIZE), (int)(8 * sizeof(void *)));
+    // Keep a real margin on the device: a full pool is an LVGL assert.
+    if (sizeof(void *) == 4 && mon.max_used > LV_MEM_SIZE * 85 / 100) {
+        printf("FAIL: LVGL pool above 85%% on the device build\n");
+        return 1;
+    }
     return s_fail ? 1 : 0;
 }

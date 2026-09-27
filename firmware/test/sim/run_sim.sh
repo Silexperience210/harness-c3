@@ -26,10 +26,19 @@ fi
 grep -q "LVGL_VERSION_MINOR 2" "$LVGL_DIR/lv_version.h" || { echo "LVGL at $LVGL_DIR is not 9.2.x"; exit 1; }
 
 mkdir -p "$BUILD" "$OUT"
-CFLAGS="-std=gnu11 -O1 -g -DLV_CONF_INCLUDE_SIMPLE -I$SIM -I$LVGL_DIR"
+# SIM_DEVICE=1: 32-bit pointers and the device's LVGL pool size (read from
+# sdkconfig.defaults), so the pool high-water mark printed at the end is what
+# the ESP32-C3 will see. Needs gcc-multilib.
+ARCH_FLAGS=""
+if [ "${SIM_DEVICE:-0}" = 1 ]; then
+  KB=$(sed -n 's/^CONFIG_LV_MEM_SIZE_KILOBYTES=//p' "$FW/sdkconfig.defaults")
+  ARCH_FLAGS="-m32 -DLV_MEM_SIZE=(${KB:-48}*1024U)"
+  BUILD=$BUILD-device
+fi
+CFLAGS="-std=gnu11 -O1 -g $ARCH_FLAGS -DLV_CONF_INCLUDE_SIMPLE -I$SIM -I$LVGL_DIR"
 LIB=$BUILD/liblvgl_sim.a
 STAMP=$BUILD/lvgl.stamp
-KEY="$(cat "$SIM/lv_conf.h" "$LVGL_DIR/lv_version.h" | sha1sum | cut -c1-12)"
+KEY="$( (cat "$SIM/lv_conf.h" "$LVGL_DIR/lv_version.h"; echo "$ARCH_FLAGS") | sha1sum | cut -c1-12)"
 if [ ! -f "$LIB" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$KEY" ]; then
   echo "== building LVGL for the host (once) =="
   rm -rf "$BUILD/lvgl" && mkdir -p "$BUILD/lvgl"

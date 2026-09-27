@@ -13,5 +13,6 @@ __pycache__
 
 # UI simulator scratch (see firmware/test/sim/.gitignore)
 firmware/test/sim/.build/
+firmware/test/sim/.build-device/
 firmware/test/sim/.lvgl/
 firmware/test/sim/out/
