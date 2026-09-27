@@ -15,8 +15,13 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 ## What it does
 
 - **Agent carousel** — a status ring per agent (grey idle / blue working /
-  amber waiting / green done / red error), name, engine · machine, the live
-  status line, page dots and the account-wide fleet badge.
+  amber waiting / green done / red error), name, a coloured engine pill +
+  machine, the live status line, page dots and the account-wide fleet badge.
+  It moves: a comet circles the ring while a turn runs (with a turn timer,
+  "Working · 1:23"), the ring fills green when a turn finishes, the card
+  shakes on an error and slides in from the side you swiped; toasts glide,
+  question options arrive in a cascade, the backlight fades. Every effect
+  repaints only what changes (see `ui.c`, *effects*).
 - **Questions** (AskUserQuestion) take the face: tap an option (or several
   for multi-select), then ✓. Dismiss with ✕ or a sideways swipe — the
   question stays pending and an amber chip on the home screen brings it
@@ -39,6 +44,13 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 | Tap the agent card | open it on the computer (`agent.open`) |
 | Pull ↓ / push ↑ | settings / scrollpad |
 | BOOT short / long | back · open a waiting question / screen off–on |
+
+## Desk lamp
+
+`hardware/lamp/` — a 3D-printable articulated desk lamp whose bulb is the
+dial: 13 parts, no supports, printed screw joints, the display held by a
+threaded bezel, plus a short assembly & setup video (FR/EN). See
+[hardware/lamp/README.md](hardware/lamp/README.md).
 
 ## Hardware
 
@@ -148,9 +160,13 @@ permet de répondre à ses questions d'un tap, d'arrêter un tour en cours et de
 faire défiler la fenêtre.
 
 - **Carrousel d'agents** : anneau de statut coloré (gris inactif / bleu en
-  cours / ambre en attente / vert terminé / rouge erreur), nom, moteur ·
-  machine, ligne de statut en direct, points de pagination, badge du total
-  de la flotte.
+  cours / ambre en attente / vert terminé / rouge erreur), nom, pastille
+  colorée du moteur + machine, ligne de statut en direct, points de
+  pagination, badge du total de la flotte. Et ça bouge : une comète fait le
+  tour de l'anneau pendant un tour (avec chrono « En cours · 1:23 »),
+  l'anneau se remplit en vert quand le tour finit, la carte secoue la tête
+  sur une erreur et glisse du côté du swipe ; toasts, options de question
+  en cascade, fondu du rétroéclairage.
 - **Questions** : elles prennent l'écran ; touchez une option (ou plusieurs
   en choix multiple) puis ✓. ✕ ou un swipe latéral = « plus tard » : la
   question reste en attente et une pastille ambre sur l'accueil la rouvre.
@@ -170,6 +186,13 @@ faire défiler la fenêtre.
 | Toucher la carte de l'agent | l'ouvrir sur l'ordinateur |
 | Tirer ↓ / pousser ↑ | réglages / pavé de défilement |
 | BOOT court / long | retour · ouvrir la question en attente / écran on–off |
+
+## Lampe de bureau
+
+`hardware/lamp/` : une lampe articulée imprimable dont l'ampoule est le
+cadran — 13 pièces sans support, articulations vissées imprimées, écran
+tenu par une bague filetée, et une courte vidéo de montage (FR/EN). Voir
+[hardware/lamp/README.md](hardware/lamp/README.md).
 
 ## Matériel et câble
 
