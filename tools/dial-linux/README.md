@@ -108,3 +108,46 @@ then on the dial: swipe ←/→ between cards, tap a card to open it.
   from the tmux session name.
 - Backlight 16 / `screen=2` in the log = dimmed after 60 s (off after 10 min):
   firmware behaviour, not a fault.
+
+## A card that says "inactif"
+
+The dial draws a card's state from the daemon's **turn events**, never from the
+desk content: a session the daemon has just discovered reads `inactif` until it
+actually works — accurate, not a fault, and nothing to fix on the dial side.
+`/api/status` shows why: `sessions[].sessionId` is empty until the engine's own
+hook binds the session.
+
+The daemon installs that hook itself. For Hermes it writes a pair into
+`~/.hermes/config.yaml` (`on_session_start` and `pre_llm_call` →
+`~/.harness/cli/notify.mjs --engine hermes`, inside the `# machine-adapter`
+block), so a Hermes agent started in a `harness-*` pane *after* that install is
+followed automatically. A working turn then looks like this:
+
+```
+[hooks] pre_llm_call · engine=hermes
+[turn] 20260927 started · engine=hermes · bytes=23
+[turn] 20260927 ended · 2000ms
+[recap] done · recap="Bonjour" · device=true      ← pushed to the dial
+```
+
+**Do not bridge this yourself.** The daemon only trusts a hook whose caller is a
+descendant of the engine process it resolved in the pane, and refuses everything
+else (`unmatched hermes hook … caller is not a descendant of that engine
+process`, then `no_matching_engine_process`, then `UNBOUND_HOOK` on a turn): an
+external `curl`, even with the right `x-harness-hook-token`
+(`~/.harness/cli/data/hook-credential`, mode 600), never lands. Only a real hook
+— a child of the agent process — counts, and Hermes already has one.
+
+Two limits worth knowing:
+
+- a session driven through the **gateway** (Telegram, no tmux pane) is not
+  watched at all — the daemon observes panes only, so it can never appear as a
+  card; and
+- the **first** turn of a session loses its `turn_started` ("the turn opened
+  before the session was attached") and therefore produces no recap. Later
+  turns are complete.
+
+```sh
+journalctl --user -u harness.service | grep -E '\[turn\]|\[recap\]|\[hooks\]'
+curl -s -H 'x-adapter-local: 1' http://127.0.0.1:18473/api/status   # sessions[].sessionId
+```
