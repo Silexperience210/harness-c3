@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness C3 — cadran, lampe, web flasher</title>
+<style>
+  :root { --bg: #0b0c0f; --card: #15171c; --line: #23262d; --text: #e8eaee; --dim: #9aa3ae; --accent: #ff6b14; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f2ee; --card: #ffffff; --line: #e2ded7; --text: #16181c; --dim: #5b636e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 30px 20px 40px; }
+  h1 { margin: 0 0 4px; font-size: clamp(26px, 4.4vw, 34px); letter-spacing: -0.01em; }
+  .bar { width: 72px; height: 4px; background: var(--accent); border-radius: 2px; margin: 9px 0 14px; }
+  .lead { color: var(--dim); margin: 0 0 22px; max-width: 66ch; font-size: 15.5px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line);
+          border-radius: 16px; padding: 12px 14px 16px; text-decoration: none; color: inherit;
+          transition: border-color .15s ease, transform .15s ease; }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .visual { width: 100%; aspect-ratio: 16 / 9; border-radius: 11px;
+                  background: radial-gradient(120% 120% at 50% 0%, #1e2229 0%, #14171c 70%);
+                  border: 1px solid var(--line); object-fit: cover; display: flex;
+                  align-items: center; justify-content: center; margin-bottom: 12px; }
+  .card .visual svg { width: 62px; height: 62px; stroke: var(--accent); fill: none; stroke-width: 1.5;
+                      filter: drop-shadow(0 0 12px rgba(255, 107, 20, .22)); }
+  .card h2 { margin: 0 0 5px; font-size: 18px; }
+  .card p { margin: 0; color: var(--dim); font-size: 14px; }
+  .go { display: inline-block; margin-top: auto; padding-top: 12px; color: var(--accent);
+        font-weight: 600; font-size: 14px; }
+  .specs { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 22px 0 0; padding: 0; list-style: none; }
+  .specs li { font-size: 12.5px; color: var(--dim); border: 1px solid var(--line);
+              border-radius: 999px; padding: 4px 10px; }
+  footer { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);
+           color: var(--dim); font-size: 13.5px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Harness C3</h1>
+  <div class="bar"></div>
+  <p class="lead">Le cadran tactile rond qui suit vos agents de code, et la lampe de bureau imprimable
+     dont il est l'ampoule — firmware, impression et montage au même endroit.<br>
+     The round touch dial that keeps an eye on your coding agents, and the printable desk lamp it
+     lives in — firmware, printing and assembly in one place.</p>
+
+  <div class="grid">
+    <a class="card" href="webflasher/">
+      <span class="visual" aria-hidden="true">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6.5" y="6.5" width="11" height="11" rx="1.6"></rect>
+          <rect x="10.5" y="10.5" width="3" height="3" rx="0.6"></rect>
+          <path d="M9.5 6.5V3.4M14.5 6.5V3.4M9.5 17.5v3.1M14.5 17.5v3.1M6.5 9.5H3.4M6.5 14.5H3.4M17.5 9.5h3.1M17.5 14.5h3.1"></path>
+        </svg>
+      </span>
+      <h2>Web flasher</h2>
+      <p>Flashez le firmware depuis le navigateur (Chrome ou Edge), sans rien installer.<br>
+         Flash the firmware straight from your browser — nothing to install.</p>
+      <span class="go">Ouvrir · open →</span>
+    </a>
+
+    <a class="card" href="lamp/">
+      <img class="visual" src="lamp/poster.jpg" alt="Harness C3 — la lampe imprimée, montage">
+      <h2>La lampe · the lamp</h2>
+      <p>Montage filmé en français et en anglais, STL, générateur et notice d'impression.<br>
+         Assembly video in French and English, STLs, generator and printing guide.</p>
+      <span class="go">Voir le montage · watch →</span>
+    </a>
+  </div>
+
+  <ul class="specs">
+    <li>ESP32-C3 · 240×240 rond</li>
+    <li>tactile CST816D</li>
+    <li>firmware 0.2.0-c3</li>
+    <li>3 cartes d'agents · links · fork</li>
+    <li>STL + générateur</li>
+  </ul>
+
+  <footer>
+    <a href="https://github.com/Silexperience210/harness-c3">Code source · source</a> ·
+    <a href="https://github.com/Silexperience210/harness-c3/tree/main/hardware/lamp">STL, générateur, notice · STLs, generator, guide</a>
+  </footer>
+</main>
+</body>
+</html>
