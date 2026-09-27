@@ -29,6 +29,7 @@ let machineId = "";
 let ws = null;
 let agentIds = [];
 let sentAt = 0;
+let wsStartedAt = 0;   // when the current socket attempt began
 
 async function status() {
   const res = await fetch(HTTP + "/api/status", { headers: { "x-adapter-local": "1" } });
@@ -60,6 +61,7 @@ function publish(force = false) {
 
 function connect() {
   ws = new WebSocket(WS_URL);
+  wsStartedAt = Date.now();
   ws.onopen = () => {
     console.log(new Date().toISOString(), "local bridge connected");
     send({ type: "machine_select", payload: { machineId, localProtocolVersion: 1 } });
@@ -76,7 +78,22 @@ function connect() {
   ws.onerror = () => {};
 }
 
+// A daemon restart can leave the socket half-open — no open, no close event —
+// and then the bridge silently stops publishing: the desk is cleared and the
+// dial drops back to "no agent". So never trust the socket: if it is not OPEN
+// and the attempt is older than 10 s, force a fresh connection.
+function ensureSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (ws && Date.now() - wsStartedAt < 10000) return; // a connect is in flight
+  console.log(new Date().toISOString(), "bridge not open · reconnecting");
+  try {
+    if (ws) ws.close();
+  } catch {}
+  connect();
+}
+
 async function loop() {
+  ensureSocket();
   try {
     const state = await status();
     if (!machineId) machineId = state.machineId;
