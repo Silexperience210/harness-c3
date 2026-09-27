@@ -93,6 +93,42 @@ tail -2 ~/.harness/logs/dial-$(date +%Y%m%d).log
 Start agents with `hermes-dial` (one per call, each in its own tmux session),
 then on the dial: swipe ←/→ between cards, tap a card to open it.
 
+## Tap a card = open the agent's terminal
+
+A tap on a card is `agent.open`, and the daemon does not act on it itself: it
+forwards it to the connected app as `{"type":"dial_open","payload":{agentId,
+reason?}}` (on macOS the app opens a tile). The bridge answers it:
+
+- the agent's tmux session has **no client** → it opens a terminal running
+  `tmux attach-session -t <session>`;
+- a client is **already attached** → it selects the agent's pane and, if
+  `wmctrl` is installed (X11), raises that window;
+- `reason: "question"` (a question screen that came up on its own) only
+  brings forward what is already on screen: no window per question.
+
+Terminal: the first found of `x-terminal-emulator` (Debian/Ubuntu default),
+`gnome-terminal`, `konsole`, `kitty`, `alacritty`, `wezterm`, `foot`,
+`ghostty`, `xfce4-terminal`, `xterm`. Choose with an override in the unit:
+
+```sh
+systemctl --user edit harness-desk
+# [Service]
+# Environment=HARNESS_DIAL_TERMINAL=kitty
+# or any command, {session} is replaced (no shell involved):
+# Environment="HARNESS_DIAL_OPEN=wezterm start -- tmux attach -t {session}"
+```
+
+**Nothing opens?** `journalctl --user -u harness-desk -f`, tap a card:
+
+- `no DISPLAY/WAYLAND_DISPLAY` → the user service cannot reach your desktop:
+  `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY`
+  then `systemctl --user restart harness-desk` (most desktops do this at
+  login; add it to your session autostart if yours does not);
+- `no terminal found` → set `HARNESS_DIAL_TERMINAL` / `HARNESS_DIAL_OPEN`;
+- `no tmux pane known` → the agent was not started in tmux (use `hermes-dial`);
+- no `open …` line at all → the bridge running is an older copy: reinstall
+  `harness-desk-linux.mjs` to `~/.harness/` and restart the unit.
+
 ## Pitfalls
 
 - `app_panes` without `app_swarms` = `agents → 0 of N` and an empty dial.
