@@ -20,7 +20,7 @@
   .card { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line);
           border-radius: 16px; padding: 12px 14px 16px; text-decoration: none; color: inherit;
           transition: border-color .15s ease, transform .15s ease; }
-  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card:hover, .card:focus-visible { border-color: var(--accent); transform: translateY(-2px); }
   .card .visual { width: 100%; aspect-ratio: 16 / 9; border-radius: 11px;
                   background: radial-gradient(120% 120% at 50% 0%, #1e2229 0%, #14171c 70%);
                   border: 1px solid var(--line); object-fit: cover; display: flex;
@@ -33,10 +33,11 @@
         font-weight: 600; font-size: 14px; }
   .specs { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 22px 0 0; padding: 0; list-style: none; }
   .specs li { font-size: 12.5px; color: var(--dim); border: 1px solid var(--line);
-              border-radius: 999px; padding: 4px 10px; }
+              border-radius: 999px; padding: 4px 10px; cursor: default; }
   footer { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);
            color: var(--dim); font-size: 13.5px; }
   footer a { color: var(--accent); }
+  .sep { color: var(--dim); }
 </style>
 </head>
 <body>
@@ -57,7 +58,7 @@
           <path d="M9.5 6.5V3.4M14.5 6.5V3.4M9.5 17.5v3.1M14.5 17.5v3.1M6.5 9.5H3.4M6.5 14.5H3.4M17.5 9.5h3.1M17.5 14.5h3.1"></path>
         </svg>
       </span>
-      <h2>Web flasher</h2>
+      <h2>Le flasher web · Web flasher</h2>
       <p>Flashez le firmware depuis le navigateur (Chrome ou Edge), sans rien installer.<br>
          Flash the firmware straight from your browser — nothing to install.</p>
       <span class="go">Ouvrir · open →</span>
@@ -67,23 +68,32 @@
       <img class="visual" src="lamp/poster.jpg" alt="Harness C3 — la lampe imprimée, montage">
       <h2>La lampe · the lamp</h2>
       <p>Montage filmé en français et en anglais, STL, générateur et notice d'impression.<br>
-         Assembly video in French and English, STLs, generator and printing guide.</p>
-      <span class="go">Voir le montage · watch →</span>
+         Assembly video in French and English, STL, generator and printing guide.</p>
+      <span class="go">Voir le montage · watch the build →</span>
     </a>
   </div>
 
   <ul class="specs">
-    <li>ESP32-C3 · 240×240 rond</li>
+    <li>ESP32-C3</li>
+    <li>écran rond 240×240</li>
     <li>tactile CST816D</li>
-    <li>firmware 0.2.0-c3</li>
-    <li>3 cartes d'agents · links · fork</li>
+    <li id="fw">firmware 0.2.0</li>
+    <li>3 cartes d'agents</li>
     <li>STL + générateur</li>
   </ul>
 
   <footer>
-    <a href="https://github.com/Silexperience210/harness-c3">Code source · source</a> ·
-    <a href="https://github.com/Silexperience210/harness-c3/tree/main/hardware/lamp">STL, générateur, notice · STLs, generator, guide</a>
+    <a href="https://github.com/Silexperience210/harness-c3">Code source · source</a>
+    <span class="sep">·</span>
+    <a href="https://github.com/Silexperience210/harness-c3/tree/main/hardware/lamp">STL, générateur, notice · STL, generator, guide</a>
   </footer>
 </main>
+<script>
+  // le numéro de firmware vient du manifeste du flasher : il ne peut pas mentir
+  fetch("webflasher/manifest.json")
+    .then((r) => r.json())
+    .then((j) => { if (j && j.version) document.getElementById("fw").textContent = "firmware " + j.version; })
+    .catch(() => {});
+</script>
 </body>
 </html>
