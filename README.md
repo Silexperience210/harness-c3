@@ -53,6 +53,11 @@ whose reflector turns the display into the bulb, plus a short assembly &
 setup video (FR/EN). See
 [hardware/lamp/README.md](hardware/lamp/README.md).
 
+[![The lamp: assembly preview — click to play the video with sound](docs/lamp/preview.gif)](https://silexperience210.github.io/harness-c3/lamp/)
+
+**▶ [Watch the assembly & setup video (FR / EN, with sound)](https://silexperience210.github.io/harness-c3/lamp/)** ·
+MP4: [français](docs/lamp/harness-c3-lamp-fr.mp4) · [English](docs/lamp/harness-c3-lamp-en.mp4)
+
 ## Hardware
 
 Board **ESP32-2424S012C** (sold in a case as **-C-I**). Everything is on the
@@ -195,6 +200,11 @@ cadran — 13 pièces sans support, articulations vissées imprimées, abat-jour
 vintage en cloche dont le réflecteur fait de l'écran l'ampoule, et une
 courte vidéo de montage (FR/EN). Voir
 [hardware/lamp/README.md](hardware/lamp/README.md).
+
+[![La lampe : aperçu du montage — cliquez pour la vidéo avec le son](docs/lamp/preview.gif)](https://silexperience210.github.io/harness-c3/lamp/)
+
+**▶ [Voir la vidéo de montage et de mise en route (FR / EN, avec le son)](https://silexperience210.github.io/harness-c3/lamp/)** ·
+MP4 : [français](docs/lamp/harness-c3-lamp-fr.mp4) · [English](docs/lamp/harness-c3-lamp-en.mp4)
 
 ## Matériel et câble
 

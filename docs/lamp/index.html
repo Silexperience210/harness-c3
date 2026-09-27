@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness C3 — la lampe · the lamp</title>
+<style>
+  :root { --bg: #0b0c0f; --card: #15171c; --text: #e8eaee; --dim: #9aa3ae; --accent: #ff6b14; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f2ee; --card: #ffffff; --text: #16181c; --dim: #5b636e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 48px; }
+  h1 { margin: 0 0 4px; font-size: clamp(26px, 5vw, 38px); }
+  .bar { width: 72px; height: 4px; background: var(--accent); border-radius: 2px; margin: 10px 0 18px; }
+  p { color: var(--dim); margin: 0 0 20px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs button { font: inherit; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--dim);
+                 background: transparent; color: var(--text); cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+  video { width: 100%; max-width: 100%; border-radius: 14px; background: #000; display: block; }
+  .card { background: var(--card); border-radius: 18px; padding: 14px; }
+  ul { color: var(--dim); padding-left: 20px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Harness C3 — la lampe · the lamp</h1>
+  <div class="bar"></div>
+  <p>Une lampe de bureau articulée, imprimable, dont l'ampoule est le cadran tactile rond.
+     · A printable articulated desk lamp whose bulb is the round touch dial.</p>
+  <div class="tabs" role="group" aria-label="Langue / Language">
+    <button id="fr" aria-pressed="true">Français</button>
+    <button id="en" aria-pressed="false">English</button>
+  </div>
+  <div class="card">
+    <video id="v" controls preload="metadata" playsinline poster="poster.jpg" src="harness-c3-lamp-fr.mp4"></video>
+  </div>
+  <ul>
+    <li><a href="https://github.com/Silexperience210/harness-c3/tree/main/hardware/lamp">STL, générateur, notice · STLs, generator, guide</a></li>
+    <li>MP4 : <a href="harness-c3-lamp-fr.mp4">français</a> · <a href="harness-c3-lamp-en.mp4">English</a></li>
+    <li><a href="../webflasher/">Web flasher</a></li>
+  </ul>
+</main>
+<script>
+  const v = document.getElementById("v");
+  for (const lang of ["fr", "en"]) {
+    document.getElementById(lang).addEventListener("click", () => {
+      const playing = !v.paused;
+      v.src = `harness-c3-lamp-${lang}.mp4`;
+      document.documentElement.lang = lang;
+      for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-pressed", String(b.id === lang));
+      if (playing) v.play();
+    });
+  }
+</script>
+</body>
+</html>

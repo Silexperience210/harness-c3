@@ -529,7 +529,7 @@ def cmd_compose(langs=("fr", "en")):
             w.setsampwidth(2)
             w.setframerate(rate)
             w.writeframes(np.concatenate(audio).tobytes())
-        mp4 = HERE / f"harness-c3-lamp-{lang}.mp4"
+        mp4 = HERE.parents[2] / "docs" / "lamp" / f"harness-c3-lamp-{lang}.mp4"   # served by GitHub Pages
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(FPS), "-i", str(out / "%05d.png"),
                         "-i", str(WORK / f"voice_{lang}.wav"), "-vf", "fps=30,format=yuv420p",
                         "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "96k",
