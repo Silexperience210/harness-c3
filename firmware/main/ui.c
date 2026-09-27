@@ -294,6 +294,10 @@ static lv_obj_t *new_button(lv_obj_t *parent, const char *text, int w, int h, ui
 
 static void load(lv_obj_t *scr, screen_t which, lv_screen_load_anim_t anim)
 {
+    // A glitch on the panel's SPI lines can flip its scan direction and the
+    // picture comes out mirrored: rewriting the orientation during a screen
+    // transition is invisible to the eye, and heals it (see display.h).
+    display_reassert_orientation();
     s_screen = which;
     if (lv_screen_active() == scr) return;
     if (anim == LV_SCR_LOAD_ANIM_NONE) lv_screen_load(scr);

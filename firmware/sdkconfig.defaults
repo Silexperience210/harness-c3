@@ -59,9 +59,12 @@ CONFIG_LV_USE_ASSERT_NULL=y
 CONFIG_LV_USE_ASSERT_MALLOC=y
 
 # ── panel scan direction ───────────────────────────────────────────────────
-# On unit Silexperience (Sunton 2424S012C, GC9A01 batch of 2026-09) the
-# driver's default scan direction already draws correctly: the Kconfig
-# default (mirror X on) made the picture come out mirrored. Untick it here
-# rather than in Kconfig.projbuild, so the Kconfig help stays accurate for
-# the batches that do need mirroring.
-CONFIG_HARNESS_LCD_MIRROR_X=n
+# Unit Silexperience (Sunton 2424S012C, GC9A01 batch of 2026-09). Measured on
+# the device: the picture is mirrored when the driver's native scan direction
+# is left untouched, so the mirror is needed — the Kconfig defaults are right
+# for the PANEL. They are wrong for the TOUCH though (mirror X off by default):
+# that mismatch drew the UI correctly while sending every tap to the mirrored
+# side. Both are therefore pinned explicitly, so the two halves of the same
+# glass can never disagree.
+CONFIG_HARNESS_LCD_MIRROR_X=y
+CONFIG_HARNESS_TOUCH_MIRROR_X=y
