@@ -9,6 +9,10 @@
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_BUILTIN
 #define LV_USE_STDLIB_STRING    LV_STDLIB_BUILTIN
 #define LV_USE_STDLIB_SPRINTF   LV_STDLIB_BUILTIN
+/* Lamp mode's radial glow (as in sdkconfig.defaults). */
+#define LV_USE_DRAW_SW_COMPLEX_GRADIENTS 1
+#define LV_GRADIENT_MAX_STOPS 3
+
 #ifndef LV_MEM_SIZE
 #define LV_MEM_SIZE (96 * 1024U)
 #endif

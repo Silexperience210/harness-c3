@@ -460,6 +460,28 @@ def check():
     return not bad
 
 
+def verify_stl():
+    """The committed STLs must be what this generator produces: same triangle
+    count, volume within 0.01 %, bounds within 0.001 mm. Exit status 1 if not."""
+    stale = []
+    for name, (fn, _, _) in PARTS.items():
+        path = OUT / f"{name}.stl"
+        if not path.exists():
+            stale.append(f"{name}: missing")
+            continue
+        fresh = to_trimesh(fn())
+        disk = trimesh.load(path, force="mesh")
+        same = (len(fresh.faces) == len(disk.faces)
+                and abs(fresh.volume - disk.volume) <= 1e-4 * abs(fresh.volume)
+                and np.allclose(fresh.bounds, disk.bounds, atol=1e-3))
+        print(f"{name:12s} {'ok' if same else 'STALE'}")
+        if not same:
+            stale.append(name)
+    if stale:
+        print("STL out of date — run `python3 lamp.py` and commit stl/:", ", ".join(stale))
+    return not stale
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     built = {}
@@ -491,6 +513,11 @@ def main():
 
 
 if __name__ == "__main__":
-    if "--check" in sys.argv:
-        sys.exit(0 if check() else 1)
+    if "--check" in sys.argv or "--verify-stl" in sys.argv:
+        ok = True
+        if "--check" in sys.argv:
+            ok = check() and ok
+        if "--verify-stl" in sys.argv:
+            ok = verify_stl() and ok
+        sys.exit(0 if ok else 1)
     main()

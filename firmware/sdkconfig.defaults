@@ -57,6 +57,9 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 CONFIG_LV_USE_ASSERT_NULL=y
 CONFIG_LV_USE_ASSERT_MALLOC=y
+# Lamp mode: the radial glow is a complex gradient.
+CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS=y
+CONFIG_LV_GRADIENT_MAX_STOPS=3
 
 # ── panel scan direction ───────────────────────────────────────────────────
 # Unit Silexperience (Sunton 2424S012C, GC9A01 batch of 2026-09). Measured on

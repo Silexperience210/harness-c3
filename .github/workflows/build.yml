@@ -43,6 +43,20 @@ jobs:
   # espressif/esp-idf-ci-action (a plain `docker run`, so the image entrypoint
   # that exports the IDF environment still runs — a job `container:` overrides
   # it, and "espressif/idf-install-action" does not exist).
+  # The lamp: the design review (collisions, thread fits, the USB-C plug
+  # path, print ceilings, stability) and the committed STLs = the generator.
+  lamp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the CAD libraries
+        run: pip install "manifold3d==3.5.4" "trimesh==5.1.0" numpy
+      - name: Design review and STL freshness
+        run: python3 hardware/lamp/lamp.py --check --verify-stl
+
   firmware:
     runs-on: ubuntu-latest
     steps:
@@ -81,7 +95,7 @@ jobs:
   # Also runnable by hand (Actions → build → Run workflow) to refresh the page.
   webflasher:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [host-tests, ui-sim, firmware]
+    needs: [host-tests, ui-sim, firmware, lamp]
     concurrency:
       group: webflasher
       cancel-in-progress: false
@@ -128,12 +142,26 @@ jobs:
         run: |
           git config user.name "harness-c3-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add docs/webflasher/bin docs/webflasher/manifest.json
-          git diff --cached --quiet && exit 0
-          git commit -m "webflasher: binaries for $(cat firmware/version.txt) ($(git rev-parse --short HEAD))"
-          # main may have moved while we built: replay on top, then push.
-          git pull --rebase origin main
-          git push origin HEAD:main
+          msg="webflasher: binaries for $(cat firmware/version.txt) ($(git rev-parse --short HEAD))"
+          # main may have moved while we built, and a rebase of one binary
+          # commit onto another conflicts. So each attempt starts from the
+          # current main and lays this build's files on top.
+          stash=$(mktemp -d)
+          cp -r docs/webflasher/bin docs/webflasher/manifest.json "$stash/"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            rm -rf docs/webflasher/bin
+            cp -r "$stash/bin" docs/webflasher/bin
+            cp "$stash/manifest.json" docs/webflasher/manifest.json
+            git add docs/webflasher/bin docs/webflasher/manifest.json
+            git diff --cached --quiet && exit 0
+            git commit -q -m "$msg"
+            git push -q origin HEAD:main && exit 0
+            echo "push lost a race (attempt $attempt), retrying"
+            sleep $((attempt * 5))
+          done
+          exit 1
 
   # Tagged releases: the 4 raw bins, the merged image and a source zip.
   release:

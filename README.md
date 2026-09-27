@@ -33,6 +33,12 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 - **Finished turns** and **errors** pop up as toasts (the board has no
   buzzer); the screen dims after 60 s, switches off after 10 min, and a
   question always wakes it. A tap on a dark screen only wakes it.
+- **Lamp mode** — the dial as a light, for the desk lamp it lives in: a
+  radial glow in five tones (candle, warm, neutral, daylight, cool); drag
+  ↑↓ for brightness, ←→ for the tone, tap to leave. Never dimmed, works
+  offline, remembered in NVS; a question still takes the face and hands it
+  back, and a dot at 12 o'clock shows a running turn (blue), a question
+  (amber) or an error (red).
 - **Settings** (pull down): brightness (kept in NVS), firmware / touch chip,
   free RAM, link error counters.
 - Speaks the upstream **cable** protocol (binary framing + JSON vocabulary)
@@ -43,6 +49,7 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 | Swipe ← / → (or tap ‹ ›) | next / previous agent (sends `focus`) |
 | Tap the agent card | open it on the computer (`agent.open`) |
 | Pull ↓ / push ↑ | settings / scrollpad |
+| Hold the card (or the offline screen) | **lamp mode** — also *Settings → Lamp* |
 | BOOT short / long | back · open a waiting question / screen off–on |
 
 ## Desk lamp
@@ -183,6 +190,12 @@ faire défiler la fenêtre.
 - Tours terminés et erreurs en notifications (pas de buzzer sur la carte) ;
   l'écran s'atténue après 60 s, s'éteint après 10 min, une question le
   rallume. Un toucher sur écran éteint ne fait que le réveiller.
+- **Mode lampe** : le cadran devient une lumière, pour la lampe de bureau
+  qui l'accueille — une lueur radiale en cinq teintes (bougie, chaude,
+  neutre, jour, froide) ; glissez ↑↓ pour l'intensité, ←→ pour la teinte,
+  touchez pour sortir. Jamais atténué, marche hors ligne, mémorisé ; une
+  question prend toujours l'écran puis le rend, et un point en haut dit si
+  un agent travaille (bleu), attend une réponse (ambre) ou a échoué (rouge).
 - **Réglages** (tirez vers le bas) : luminosité mémorisée, version, puce
   tactile, RAM libre, compteurs d'erreurs du lien.
 
@@ -191,6 +204,7 @@ faire défiler la fenêtre.
 | Swipe ← / → (ou ‹ ›) | agent suivant / précédent |
 | Toucher la carte de l'agent | l'ouvrir sur l'ordinateur |
 | Tirer ↓ / pousser ↑ | réglages / pavé de défilement |
+| Appui long sur la carte (ou l'écran hors ligne) | **mode lampe** — aussi *Réglages → Lampe* |
 | BOOT court / long | retour · ouvrir la question en attente / écran on–off |
 
 ## Lampe de bureau

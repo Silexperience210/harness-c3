@@ -118,7 +118,7 @@ static QueueHandle_t s_ev_queue;
 
 // ── UI state (UI task only) ─────────────────────────────────────────────────
 
-typedef enum { SCR_BOOT, SCR_OFFLINE, SCR_HOME, SCR_QUESTION, SCR_SETTINGS, SCR_PAD } screen_t;
+typedef enum { SCR_BOOT, SCR_OFFLINE, SCR_HOME, SCR_QUESTION, SCR_SETTINGS, SCR_PAD, SCR_LAMP } screen_t;
 
 static screen_t s_screen = SCR_BOOT;
 static bool     s_has_touch;
@@ -150,7 +150,14 @@ static int64_t s_last_alive_us;
 // ── LVGL objects ────────────────────────────────────────────────────────────
 
 static lv_obj_t *s_scr_boot, *s_scr_offline, *s_scr_home, *s_scr_question, *s_scr_settings,
-                *s_scr_pad;
+                *s_scr_pad, *s_scr_lamp;
+
+// Lamp mode: the dial used as a light (level + tone kept in NVS).
+static lv_obj_t     *s_lamp_hint, *s_lamp_dot;
+static lv_grad_dsc_t s_lamp_grad;          // must outlive the style that points at it
+static int           s_lamp_level = 70, s_lamp_warmth = 1;
+static bool          s_lamp_resume;        // a question took the face from the lamp: give it back
+static struct { lv_point_t start; int level0, warm0; char axis; } s_lamp_drag;
 
 // home
 static lv_obj_t   *s_ring, *s_h_header, *s_h_state, *s_badge, *s_badge_label;
@@ -497,6 +504,7 @@ static int dim_level(void)
 static int power_target(void)
 {
     if (s_forced_off) return 0;
+    if (s_screen == SCR_LAMP) return s_lamp_level;     // a lamp does not dim
     const uint32_t idle_ms = lv_display_get_inactive_time(NULL);
     // A waiting question never lets the screen go fully dark.
     if (s_q_pending == 0 && CONFIG_HARNESS_OFF_AFTER_S > 0 &&
@@ -535,6 +543,9 @@ static void ui_wake(void)
 
 static bool screen_is_dark(void)
 {
+    // A lamp set lower than the UI brightness is still a lit screen: a touch
+    // on it is a gesture, not a wake-up.
+    if (s_screen == SCR_LAMP) return display_get_backlight() == 0;
     return display_get_backlight() < settings_brightness();
 }
 
@@ -625,6 +636,185 @@ static void question_restyle(void);
 static void open_settings(void);
 static void open_pad(void);
 static void go_home(lv_screen_load_anim_t anim);
+
+// ── lamp mode: the dial as a light ─────────────────────────────────────────
+// The screen becomes a bulb: a radial glow in one of five tones, the
+// backlight at the lamp's own level (never dimmed). Drag ↑↓ = brightness,
+// ←→ = tone, tap = leave. A question still takes the face, then hands it
+// back. A dot at 12 o'clock tells what the agents are doing.
+
+static const struct { const char *fr, *en; uint32_t center, mid, edge; } LAMP_TONES[LAMP_WARMTHS] = {
+    { "Bougie", "Candle",   0xffd49a, 0xff9a3c, 0x4a1a03 },
+    { "Chaude", "Warm",     0xfff0d8, 0xffc27e, 0x6a320a },
+    { "Neutre", "Neutral",  0xfffaf0, 0xffe1b8, 0x5e4a30 },
+    { "Jour",   "Daylight", 0xffffff, 0xeef0ff, 0x46506a },
+    { "Froide", "Cool",     0xf2f7ff, 0xcfe0ff, 0x2c3c60 },
+};
+
+static void lamp_style(void)
+{
+    const int w = s_lamp_warmth;
+    const uint32_t c[3] = { LAMP_TONES[w].center, LAMP_TONES[w].mid, LAMP_TONES[w].edge };
+    const uint8_t frac[3] = { 0, 150, 255 };
+    for (int i = 0; i < 3; i++) {
+        s_lamp_grad.stops[i].color = lv_color_hex(c[i]);
+        s_lamp_grad.stops[i].opa = LV_OPA_COVER;
+        s_lamp_grad.stops[i].frac = frac[i];
+    }
+    s_lamp_grad.stops_count = 3;
+    lv_grad_radial_init(&s_lamp_grad, LV_GRAD_CENTER, LV_GRAD_CENTER, LV_GRAD_RIGHT, LV_GRAD_CENTER,
+                        LV_GRAD_EXTEND_PAD);
+    lv_obj_set_style_bg_grad(s_scr_lamp, &s_lamp_grad, 0);
+    lv_obj_invalidate(s_scr_lamp);   // same descriptor, new colours
+}
+
+// A short line in the glow, fading away.
+static void lamp_hint(const char *text, uint32_t hold_ms)
+{
+    lv_label_set_text(s_lamp_hint, text);
+    lv_anim_delete(s_lamp_hint, anim_text_opa);
+    lv_obj_set_style_text_opa(s_lamp_hint, LV_OPA_COVER, 0);
+    fx_start(s_lamp_hint, anim_text_opa, 255, 0, 600, hold_ms, lv_anim_path_ease_in);
+}
+
+static void lamp_hint_level(void)
+{
+    char t[40];
+    snprintf(t, sizeof(t), "%d %%  ·  %s", s_lamp_level,
+             TR(LAMP_TONES[s_lamp_warmth].fr, LAMP_TONES[s_lamp_warmth].en));
+    lamp_hint(t, 900);
+}
+
+// What the agents are doing, as one dot: a question > an error > a turn.
+static void lamp_dot_update(void)
+{
+    uint32_t col = 0;
+    if (s_q_pending > 0 || s_notif_questions > 0) {
+        col = COL_WAITING;
+    } else {
+        for (int i = 0; i < s_agent_count; i++) {
+            if (strcmp(s_agents[i].state, "error") == 0) { col = COL_ERROR; break; }
+            if (strcmp(s_agents[i].state, "running") == 0) col = COL_RUNNING;
+        }
+    }
+    set_hidden(s_lamp_dot, col == 0);
+    if (col) lv_obj_set_style_bg_color(s_lamp_dot, lv_color_hex(col), 0);
+}
+
+static void open_lamp(void)
+{
+    static bool explained;
+    s_lamp_level = settings_lamp_level();
+    s_lamp_warmth = settings_lamp_warmth();
+    lamp_style();
+    lamp_dot_update();
+    load(s_scr_lamp, SCR_LAMP, LV_SCR_LOAD_ANIM_FADE_IN);
+    // Opened by a long press, the finger is still down: that contact is spent.
+    // Without this, when the press was on a bare screen (offline), LVGL hands
+    // it to the lamp and the lift reads as "tap = leave".
+    for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
+        if (lv_indev_get_type(in) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED) {
+            lv_indev_wait_release(in);
+        }
+    }
+    if (!explained) {
+        lamp_hint(TR("↑↓ intensité  ·  ←→ teinte\ntouchez pour sortir",
+                     "↑↓ brightness  ·  ←→ tone\ntap to leave"), 2600);
+        explained = true;
+    } else {
+        lamp_hint_level();
+    }
+    lv_display_trigger_activity(NULL);
+    power_update();
+}
+
+static void close_lamp(void)
+{
+    s_lamp_resume = false;
+    settings_set_lamp(s_lamp_level, s_lamp_warmth);
+    go_home(LV_SCR_LOAD_ANIM_FADE_IN);
+}
+
+static void lamp_set_warmth(int w)
+{
+    if (w < 0) w = 0;
+    if (w >= LAMP_WARMTHS) w = LAMP_WARMTHS - 1;
+    if (w == s_lamp_warmth) return;
+    s_lamp_warmth = w;
+    lamp_style();
+    lamp_hint_level();
+}
+
+// One finger: the first 10 px decide the axis, then the drag is live;
+// NVS is written once, on release. No travel at all = a tap = leave.
+static void lamp_touch(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        s_lamp_drag.start = p;
+        s_lamp_drag.level0 = s_lamp_level;
+        s_lamp_drag.warm0 = s_lamp_warmth;
+        s_lamp_drag.axis = 0;
+        return;
+    }
+    const int32_t dx = p.x - s_lamp_drag.start.x, dy = p.y - s_lamp_drag.start.y;
+    if (code == LV_EVENT_PRESSING) {
+        if (!s_lamp_drag.axis && (abs(dx) > 10 || abs(dy) > 10)) s_lamp_drag.axis = abs(dy) >= abs(dx) ? 'y' : 'x';
+        if (s_lamp_drag.axis == 'y') {
+            int lvl = s_lamp_drag.level0 - dy / 2;          // finger up = brighter
+            if (lvl < 5) lvl = 5;
+            if (lvl > 100) lvl = 100;
+            if (lvl != s_lamp_level) {
+                s_lamp_level = lvl;
+                s_bl_now = lvl;                             // live, no fade behind the finger
+                display_set_backlight(lvl);
+                lamp_hint_level();
+            }
+        } else if (s_lamp_drag.axis == 'x') {
+            lamp_set_warmth(s_lamp_drag.warm0 + dx / 40);   // finger → = cooler
+        }
+        return;
+    }
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (!s_lamp_drag.axis) {
+            if (code == LV_EVENT_RELEASED) close_lamp();
+            return;
+        }
+        settings_set_lamp(s_lamp_level, s_lamp_warmth);
+    }
+}
+
+static void lamp_long_pressed(lv_event_t *e)
+{
+    (void)e;
+    open_lamp();
+}
+
+static void build_lamp(void)
+{
+    s_scr_lamp = new_screen();
+    lv_obj_set_style_bg_opa(s_scr_lamp, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(s_scr_lamp, lamp_touch, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_scr_lamp, lamp_touch, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(s_scr_lamp, lamp_touch, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_scr_lamp, lamp_touch, LV_EVENT_PRESS_LOST, NULL);
+    s_lamp_hint = new_label(s_scr_lamp, "", &font_ui_14, 0x3a2410, 190, LV_ALIGN_CENTER, 0, 62);
+    lv_obj_set_style_text_align(s_lamp_hint, LV_TEXT_ALIGN_CENTER, 0);
+    s_lamp_dot = new_box(s_scr_lamp);
+    lv_obj_set_size(s_lamp_dot, 10, 10);
+    lv_obj_align(s_lamp_dot, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_set_style_radius(s_lamp_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(s_lamp_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_lamp_dot, 2, 0);
+    lv_obj_set_style_border_color(s_lamp_dot, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_border_opa(s_lamp_dot, LV_OPA_60, 0);
+    set_hidden(s_lamp_dot, true);
+    lamp_style();
+}
 
 // ── home screen ─────────────────────────────────────────────────────────────
 
@@ -723,6 +913,7 @@ static void pulse_tick(lv_timer_t *t)
 static void busy_tick(lv_timer_t *t)
 {
     (void)t;
+    if (s_screen == SCR_LAMP) { lamp_dot_update(); return; }
     if (s_screen != SCR_HOME || s_agent_count == 0 ||
         strcmp(s_agents[s_index].state, "running") != 0) {
         return;
@@ -783,6 +974,8 @@ static void build_home(void)
     lv_obj_set_flex_align(s_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     no_scroll(s_card);
     lv_obj_add_event_cb(s_card, card_clicked, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_card, lamp_long_pressed, LV_EVENT_LONG_PRESSED, NULL);   // hold = lamp
+    lv_obj_add_event_cb(s_scr_home, lamp_long_pressed, LV_EVENT_LONG_PRESSED, NULL);
 
     s_h_name = new_label(s_card, "", &font_ui_20, COL_TEXT, TEXT_W, LV_ALIGN_TOP_MID, 0, 0);
     lv_label_set_long_mode(s_h_name, LV_LABEL_LONG_DOT);   // height set per text: set_name()
@@ -1326,6 +1519,12 @@ static void settings_touch(lv_event_t *e)
     }
 }
 
+static void settings_lamp_clicked(lv_event_t *e)
+{
+    (void)e;
+    open_lamp();
+}
+
 static void build_settings(void)
 {
     s_scr_settings = new_screen();
@@ -1354,10 +1553,13 @@ static void build_settings(void)
     lv_obj_add_event_cb(s_set_slider, slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_set_slider, slider_changed, LV_EVENT_RELEASED, NULL);
 
-    s_set_info = new_label(s_scr_settings, "", &font_ui_14, COL_DIM, 176, LV_ALIGN_TOP_MID, 0, 136);
-    lv_obj_t *b = new_button(s_scr_settings, LV_SYMBOL_UP, 56, 32, COL_SURFACE2, COL_TEXT,
+    s_set_info = new_label(s_scr_settings, "", &font_ui_14, COL_DIM, 176, LV_ALIGN_TOP_MID, 0, 131);
+    lv_obj_t *b = new_button(s_scr_settings, LV_SYMBOL_UP, 56, 30, COL_SURFACE2, COL_TEXT,
                              back_home_clicked, NULL);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 34, -16);
+    lv_obj_t *lb = new_button(s_scr_settings, TR("Lampe", "Lamp"), 64, 30, 0xffc27e, 0x3a2410,
+                              settings_lamp_clicked, NULL);
+    lv_obj_align(lb, LV_ALIGN_BOTTOM_MID, -34, -16);
 
     s_set_dot = new_box(s_scr_settings);
     lv_obj_set_size(s_set_dot, 14, 14);
@@ -1543,6 +1745,7 @@ static void build_offline(void)
     s_radar = new_arc(s_scr_offline, RING_D, 4, COL_DIM, LV_OPA_TRANSP);
     lv_arc_set_angles(s_radar, 0, 26);
     s_radar_timer = lv_timer_create(radar_tick, 100, NULL);
+    lv_obj_add_event_cb(s_scr_offline, lamp_long_pressed, LV_EVENT_LONG_PRESSED, NULL);   // hold = lamp
     new_label(s_scr_offline, LV_SYMBOL_USB, &font_ui_28, COL_DIM, 0, LV_ALIGN_CENTER, 0, -60);
     new_label(s_scr_offline, TR("Non connecté", "Not connected"), &font_ui_20, COL_TEXT, 170,
               LV_ALIGN_CENTER, 0, -20);
@@ -1556,6 +1759,11 @@ static void build_offline(void)
 
 static void go_home(lv_screen_load_anim_t anim)
 {
+    if (s_lamp_resume) {                 // back to the lamp the question interrupted
+        s_lamp_resume = false;
+        open_lamp();
+        return;
+    }
     if (!s_connected) {
         load(s_scr_offline, SCR_OFFLINE, anim);
         return;
@@ -1659,7 +1867,7 @@ static void apply_dirty(void)
                 s_q_valid = false;
                 s_stop_armed = false;
                 if (s_answers) { cJSON_Delete(s_answers); s_answers = NULL; }
-                if (s_screen != SCR_BOOT && s_screen != SCR_SETTINGS) {
+                if (s_screen != SCR_BOOT && s_screen != SCR_SETTINGS && s_screen != SCR_LAMP) {
                     load(s_scr_offline, SCR_OFFLINE, LV_SCR_LOAD_ANIM_FADE_IN);
                 }
             }
@@ -1706,6 +1914,7 @@ static void apply_ev(const ui_ev_t *ev)
         s_q_pending = cable_client_question_count();
         // A question is a job: it takes the face — unless one is already
         // being answered, in which case the header's "+n" says there is more.
+        if (s_screen == SCR_LAMP) s_lamp_resume = true;
         if (s_screen != SCR_QUESTION) question_open();
         else question_render();
         break;
@@ -1777,6 +1986,13 @@ static void handle_button(btn_event_t ev)
         break;
     case SCR_PAD:
         if (ev == BTN_EVENT_B_SHORT) go_home(LV_SCR_LOAD_ANIM_MOVE_BOTTOM);
+        break;
+    case SCR_LAMP:
+        if (ev == BTN_EVENT_B_SHORT) close_lamp();
+        else if (ev == BTN_EVENT_A_SHORT) {
+            lamp_set_warmth((s_lamp_warmth + 1) % LAMP_WARMTHS);
+            settings_set_lamp(s_lamp_level, s_lamp_warmth);
+        }
         break;
     case SCR_OFFLINE:
     case SCR_BOOT:
@@ -1870,6 +2086,7 @@ bool ui_init(const char *fw_version, bool has_touch)
     build_question();
     build_settings();
     build_pad();
+    build_lamp();
     load(s_scr_boot, SCR_BOOT, LV_SCR_LOAD_ANIM_NONE);
     lv_timer_create(boot_timeout, BOOT_SCREEN_MS, NULL);
     // Draw the first frame NOW, then light the panel: its RAM held noise.
@@ -1897,3 +2114,12 @@ bool ui_init(const char *fw_version, bool has_touch)
     ESP_LOGI(TAG, "ui up (fw %s, %s)", s_fw, has_touch ? "touch" : "buttons only");
     return true;
 }
+
+#ifdef HARNESS_UI_SIM
+// Simulator only: which screen is up (the tests cannot see the static state).
+const char *ui_sim_screen(void)
+{
+    static const char *const names[] = { "boot", "offline", "home", "question", "settings", "pad", "lamp" };
+    return names[s_screen];
+}
+#endif

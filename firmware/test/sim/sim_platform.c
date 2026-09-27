@@ -187,6 +187,21 @@ void touch_set_wake_hook(bool (*hook)(void)) { s_wake_hook = hook; }
 
 static int s_brightness = CONFIG_HARNESS_BACKLIGHT_DEFAULT;
 int s_brightness_saves;
+static int s_lamp_level = 70, s_lamp_warmth = 1;
+int sim_lamp_saves;
+int settings_lamp_level(void) { return s_lamp_level; }
+int settings_lamp_warmth(void) { return s_lamp_warmth; }
+void settings_set_lamp(int level, int warmth)
+{
+    if (level < 5) level = 5;
+    if (level > 100) level = 100;
+    if (warmth < 0) warmth = 0;
+    if (warmth >= LAMP_WARMTHS) warmth = LAMP_WARMTHS - 1;
+    if (level == s_lamp_level && warmth == s_lamp_warmth) return;
+    s_lamp_level = level;
+    s_lamp_warmth = warmth;
+    sim_lamp_saves++;
+}
 void settings_load(void) {}
 int settings_brightness(void) { return s_brightness; }
 void settings_set_brightness(int percent)

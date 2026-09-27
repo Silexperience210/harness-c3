@@ -183,6 +183,31 @@ static void swipe(int x0, int y0, int x1, int y1)
 
 // ── the scenario ────────────────────────────────────────────────────────────
 
+const char *ui_sim_screen(void);   // ui.c, simulator builds only
+extern int sim_lamp_saves;         // sim_platform.c
+
+static bool screen_is(const char *name) { return strcmp(ui_sim_screen(), name) == 0; }
+
+static void hold_at(int x, int y, uint32_t ms)
+{
+    sim_touch(x, y, true);
+    step(ms);
+    sim_touch(x, y, false);
+    step(400);
+}
+
+static void drag(int x0, int y0, int x1, int y1)
+{
+    sim_touch(x0, y0, true);
+    step(40);
+    for (int i = 1; i <= 10; i++) {
+        sim_touch(x0 + (x1 - x0) * i / 10, y0 + (y1 - y0) * i / 10, true);
+        step(30);
+    }
+    sim_touch(x1, y1, false);
+    step(200);
+}
+
 static void scenario(void)
 {
     // Boot → "Not connected".
@@ -374,6 +399,55 @@ static void scenario(void)
     swipe(40, 120, 200, 120);
     CHECK(!on_screen("Défilement"), "sideways swipe leaves the scrollpad");
 
+    // ── Lamp mode ──
+    // Hold the card → the dial becomes a lamp, at the lamp's own level.
+    hold_at(120, 116, 900);
+    CHECK(screen_is("lamp"), "hold on the card opens the lamp (%s)", ui_sim_screen());
+    CHECK(on_screen("intensité"), "first time: how to use it");
+    step(1500);
+    CHECK(display_get_backlight() == settings_lamp_level(), "backlight at the lamp level (%d vs %d)",
+          display_get_backlight(), settings_lamp_level());
+    shot("lamp");
+    // Drag ↑ → brighter, live; saved once, on release.
+    int saves0 = sim_lamp_saves;
+    drag(120, 170, 120, 90);
+    CHECK(settings_lamp_level() == 100 && display_get_backlight() == 100, "drag up: brighter (%d)", settings_lamp_level());
+    CHECK(sim_lamp_saves == saves0 + 1, "saved once (%d)", sim_lamp_saves - saves0);
+    CHECK(screen_is("lamp"), "a drag is not a tap");
+    drag(120, 90, 120, 150);
+    CHECK(settings_lamp_level() == 70, "drag down: dimmer (%d)", settings_lamp_level());
+    // Drag → → cooler tone (40 px per step).
+    drag(60, 120, 150, 120);
+    CHECK(settings_lamp_warmth() == 3, "drag right: cooler tone (%d)", settings_lamp_warmth());
+    shot("lamp_daylight");
+    drag(180, 120, 20, 120);
+    CHECK(settings_lamp_warmth() == 0, "drag left: warmest tone (%d)", settings_lamp_warmth());
+    shot("lamp_candle");
+    // A lamp does not dim, and a touch on it is never taken for a wake-up.
+    step(70000);
+    CHECK(display_get_backlight() == settings_lamp_level(), "no dimming in lamp mode (%d)", display_get_backlight());
+    // A question takes the face, then hands it back to the lamp.
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q7\",\"questions\":[{\"key\":\"Go ?\",\"q\":\"On déploie ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
+    step(400);
+    CHECK(screen_is("question") && on_screen("On déploie"), "a question takes the face from the lamp");
+    tap_text("Oui");
+    CHECK(tap_label(LV_SYMBOL_OK, true), "answer it");
+    step(600);
+    CHECK(screen_is("lamp"), "answered: back to the lamp (%s)", ui_sim_screen());
+    // Tap → home.
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home"), "tap leaves the lamp (%s)", ui_sim_screen());
+    CHECK(display_get_backlight() == settings_brightness(), "home: UI brightness again (%d)", display_get_backlight());
+    // Settings → Lamp button → the lamp; tap → home.
+    step(3200);   // the "answer sent" toast sits where the Lamp button is: let it go
+    swipe(120, 40, 120, 200);
+    CHECK(tap_text("Lampe"), "settings has a Lamp button");
+    step(300);
+    CHECK(screen_is("lamp"), "Lamp button opens the lamp");
+    tap_at(120, 120);
+    step(400);
+
     // Idle → dim → a tap only wakes (no action).
     step(61000);
     CHECK(display_get_backlight() < settings_brightness(), "dimmed after 60 s (%d)", display_get_backlight());
@@ -388,6 +462,12 @@ static void scenario(void)
     step(16000);
     CHECK(on_screen("Non connecté"), "offline after 15 s of silence");
     shot("offline_again");
+    // A lamp needs no computer: hold on the offline screen.
+    hold_at(120, 120, 900);
+    CHECK(screen_is("lamp"), "offline: hold opens the lamp (%s)", ui_sim_screen());
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("offline"), "leaving the lamp offline goes back to offline (%s)", ui_sim_screen());
 }
 
 int main(int argc, char **argv)

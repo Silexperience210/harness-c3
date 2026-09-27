@@ -12,3 +12,10 @@ void settings_load(void);
 int  settings_brightness(void);
 // Set (clamped) and persist. Writes only when the value actually changed.
 void settings_set_brightness(int percent);
+
+// Lamp mode: the screen used as a light. Level 5–100 %, warmth 0 (candle)
+// to LAMP_WARMTHS - 1 (cool daylight). Saved together, once per gesture.
+#define LAMP_WARMTHS 5
+int  settings_lamp_level(void);
+int  settings_lamp_warmth(void);
+void settings_set_lamp(int level, int warmth);

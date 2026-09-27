@@ -75,7 +75,9 @@ the main README.
 
 ## Checking the design
 
-`python3 lamp.py --check` reviews it in software and exits 1 on a problem:
+`python3 lamp.py --check` reviews it in software and exits 1 on a problem
+(CI runs it on every push, with `--verify-stl`: the committed STLs must be
+what the generator produces):
 collisions in the assembled pose, every printed thread pair (no contact at
 `FIT`), the USB-C plug's path into the socket at every plausible port depth,
 the flat ceilings of each part in print orientation (all must be short
