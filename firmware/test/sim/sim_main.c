@@ -126,6 +126,39 @@ static lv_obj_t *find_label(const char *text) { return find_label_ex(text, false
 
 static bool on_screen(const char *text) { return find_label(text) != NULL; }
 
+// The flag that outlives a finished turn is a colour, so the scenario reads the
+// panel: green (COL_DONE 0x22c55e) for work to look at, red (COL_ERROR
+// 0xef4444) for a turn that failed. The bounds reject the white of a current
+// page dot and the grey of an idle one — a flag is neither.
+static bool pixel_flag_green(int x, int y)
+{
+    const uint16_t c = sim_pixel(x, y);
+    const int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    return g >= 40 && r <= 12 && b <= 20;
+}
+
+static bool pixel_flag_red(int x, int y)
+{
+    const uint16_t c = sim_pixel(x, y);
+    const int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    return r >= 25 && g <= 20 && b <= 12;
+}
+
+// The page dots sit in one band under the card and the row RE-CENTRES as the
+// current page widens into a pill, so a fixed pixel would read the gap. This
+// scans the band instead: 1 = a green flag, 2 = a red one, 0 = none. The band
+// stops above the action chip, whose text is red on a running agent.
+static int dots_flag(void)
+{
+    for (int y = 174; y <= 185; y++) {
+        for (int x = 92; x <= 148; x++) {
+            if (pixel_flag_green(x, y)) return 1;
+            if (pixel_flag_red(x, y)) return 2;
+        }
+    }
+    return 0;
+}
+
 static void center_of(lv_obj_t *o, int *x, int *y)
 {
     lv_area_t a;
@@ -356,10 +389,33 @@ static void scenario(void)
     shot("summary_toast");
     step(3200);
 
-    // turn.error → red toast.
+    // …and it leaves a flag the toast never did: three seconds later the toast
+    // is gone and this board has no buzzer, so a person who steps away would
+    // come back to a silent dial. The agent keeps the flag until its card is
+    // touched — green for a finished turn, red for one that failed. a2 is not
+    // the card on screen, so it shows first on its PAGE DOT: that is how one
+    // finds WHICH of four agents moved without walking the carousel.
+    CHECK(dots_flag() == 1, "a2's page dot carries the flag");
+    shot("unseen_page_dot");
+
+    swipe(190, 120, 50, 120);   // over to a2
+    CHECK(pixel_flag_green(187, 177), "the flag is on a2's card");
+    shot("unseen_flag");
+
+    // The touch IS the acknowledgement: opening the agent spends the flag.
+    tap_at(120, 116);
+    step(300);
+    CHECK(!pixel_flag_green(187, 177), "touching the card spends the flag");
+    CHECK(dots_flag() == 0, "…and its page dot too");
+    shot("unseen_flag_spent");
+    swipe(50, 120, 190, 120);   // back to a1
+
+    // A turn that FAILED keeps a red one — the colour says which happened.
     daemon_says("{\"t\":\"turn.error\",\"agentId\":\"a2\",\"message\":\"Quota dépassé\"}");
     step(200);
     CHECK(on_screen("Quota dépassé"), "error toast");
+    CHECK(dots_flag() == 2, "a failed turn flags red on its page dot");
+    shot("unseen_flag_error");
     step(3200);
 
     // Pull ↓ → settings; the brightness slider; push ↑ → home.

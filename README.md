@@ -31,8 +31,13 @@ their questions with a tap, stop a runaway turn, and scroll the window.
 - **Scrollpad** — the dial becomes a touchpad that scrolls the computer's
   window (`scroll` with fling velocity).
 - **Finished turns** and **errors** pop up as toasts (the board has no
-  buzzer); the screen dims after 60 s, switches off after 10 min, and a
-  question always wakes it. A tap on a dark screen only wakes it.
+  buzzer), and each leaves a **flag** on the agent's card — a green disc for
+  work that finished, red for a turn that failed — until that card is
+  touched: the toast lasts three seconds, and a desk you walked away from
+  should still say what happened. The agent's page dot takes the same colour,
+  so you can see which of four agents moved without walking the carousel.
+  The screen dims after 60 s, switches off after 10 min, and a question
+  always wakes it. A tap on a dark screen only wakes it.
 - **Lamp mode** — the dial as a light, for the desk lamp it lives in: a
   radial glow in five tones (candle, warm, neutral, daylight, cool); drag
   ↑↓ for brightness, ←→ for the tone, tap to leave. Never dimmed, works
@@ -187,8 +192,14 @@ faire défiler la fenêtre.
 - **Stop** d'un tour en cours (touchez *Stop* puis *Confirmer ?*).
 - **Pavé de défilement** (poussez vers le haut) : l'écran devient un
   touchpad qui fait défiler la fenêtre de l'ordinateur.
-- Tours terminés et erreurs en notifications (pas de buzzer sur la carte) ;
-  l'écran s'atténue après 60 s, s'éteint après 10 min, une question le
+- Tours terminés et erreurs en notifications (pas de buzzer sur la carte), et
+  chacun **laisse une pastille** sur la carte de l'agent — verte pour un
+  travail terminé, rouge pour un tour en échec — **jusqu'à ce qu'on touche
+  cette carte** : la notification ne dure que trois secondes, alors qu'un
+  bureau quitté un moment doit encore dire ce qui s'est passé. Le point de
+  page de l'agent prend la même couleur, donc on voit lequel des quatre a
+  bougé sans parcourir le carrousel.
+  L'écran s'atténue après 60 s, s'éteint après 10 min, une question le
   rallume. Un toucher sur écran éteint ne fait que le réveiller.
 - **Mode lampe** : le cadran devient une lumière, pour la lampe de bureau
   qui l'accueille — une lueur radiale en cinq teintes (bougie, chaude,

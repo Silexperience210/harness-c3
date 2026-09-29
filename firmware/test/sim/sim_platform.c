@@ -121,6 +121,14 @@ int display_get_backlight(void) { return s_backlight; }
 // to re-orient, so the device's boot-time re-assert is a no-op here.
 void display_reassert_orientation(void) {}
 
+// One pixel of the panel, as the person sees it. The flag that outlives a
+// toast is a COLOUR, not a label, so the scenario reads it here.
+uint16_t sim_pixel(int x, int y)
+{
+    if (x < 0 || x >= DISPLAY_WIDTH || y < 0 || y >= DISPLAY_HEIGHT) return 0;
+    return s_fb[y * DISPLAY_WIDTH + x];
+}
+
 // PPM (P6) of what the round panel shows: pixels outside the circle are
 // painted as the bezel so the screenshot reads like the device.
 bool sim_screenshot(const char *path)

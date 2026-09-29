@@ -18,6 +18,7 @@ extern int  s_brightness_saves;
 
 bool sim_display_init(void);
 bool sim_screenshot(const char *path);
+uint16_t sim_pixel(int x, int y);
 void sim_touch(int x, int y, bool down);
 void sim_clock_advance_ms(uint32_t ms);
 void ui_sim_step(void);

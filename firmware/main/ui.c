@@ -107,7 +107,7 @@ typedef struct {
     ui_ev_type_t type;
     union {
         struct { bool up; char name[CABLE_NAME_MAX]; } session;
-        struct { char id[ID_MAX]; char text[96]; bool notify, beep; } agent;
+        struct { char id[ID_MAX]; char text[96]; char state[16]; bool notify, beep; } agent;
         struct { char text[112]; } toast;
         struct { char id[ID_MAX]; } focus;
     } d;
@@ -161,6 +161,7 @@ static struct { lv_point_t start; int level0, warm0; char axis; } s_lamp_drag;
 
 // home
 static lv_obj_t   *s_ring, *s_h_header, *s_h_state, *s_badge, *s_badge_label;
+static lv_obj_t   *s_unseen_dot;      // green/red flag: work this person has not looked at
 static lv_obj_t   *s_card, *s_h_name, *s_h_summary;
 static lv_obj_t   *s_chev_l, *s_chev_r, *s_dots, *s_action, *s_action_label;
 static lv_timer_t *s_pulse_timer, *s_busy_timer, *s_stop_timer, *s_comet_timer, *s_radar_timer;
@@ -441,6 +442,62 @@ static uint32_t engine_color(const char *e)
 
 // ── turn timer ──
 static uint32_t ui_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+// ── what the person has NOT looked at yet ───────────────────────────────────
+// A finished turn is announced by a toast that lives three seconds, and this
+// board has no buzzer: step away and the work of a colleague — or of the
+// fourth agent on the carousel — finishes in silence. So the agent keeps a
+// flag until someone touches its card: green for a turn that finished, red
+// for one that failed. It is the same promise as a question's amber chip.
+static struct { char id[ID_MAX]; uint32_t col; } s_unseen[CABLE_MAX_AGENTS];
+
+static void unseen_mark(const char *id, uint32_t col)
+{
+    if (!id || !id[0]) return;
+    int free_slot = -1;
+    for (int k = 0; k < CABLE_MAX_AGENTS; k++) {
+        if (s_unseen[k].id[0]) {
+            if (strcmp(s_unseen[k].id, id) == 0) { s_unseen[k].col = col; return; }
+        } else if (free_slot < 0) {
+            free_slot = k;
+        }
+    }
+    if (free_slot >= 0) {
+        cable_utf8_copy(s_unseen[free_slot].id, sizeof(s_unseen[free_slot].id), id);
+        s_unseen[free_slot].col = col;
+    }
+}
+
+static void unseen_clear(const char *id)
+{
+    if (!id || !id[0]) return;
+    for (int k = 0; k < CABLE_MAX_AGENTS; k++) {
+        if (s_unseen[k].id[0] && strcmp(s_unseen[k].id, id) == 0) { s_unseen[k].id[0] = '\0'; return; }
+    }
+}
+
+/** The colour waiting on [id] — 0 when nothing is. */
+static uint32_t unseen_color(const char *id)
+{
+    if (!id || !id[0]) return 0;
+    for (int k = 0; k < CABLE_MAX_AGENTS; k++) {
+        if (s_unseen[k].id[0] && strcmp(s_unseen[k].id, id) == 0) return s_unseen[k].col;
+    }
+    return 0;
+}
+
+// An agent that left the tab keeps no flag: the list is the source of truth.
+static void unseen_prune(void)
+{
+    for (int k = 0; k < CABLE_MAX_AGENTS; k++) {
+        if (!s_unseen[k].id[0]) continue;
+        bool still = false;
+        for (int i = 0; i < s_agent_count; i++) {
+            if (strcmp(s_agents[i].id, s_unseen[k].id) == 0) { still = true; break; }
+        }
+        if (!still) s_unseen[k].id[0] = '\0';
+    }
+}
 
 static void run_track(void)
 {
@@ -838,6 +895,10 @@ static void home_select(int index, bool send_focus)
 static void home_open_current(void)
 {
     if (s_agent_count == 0) return;
+    // The touch IS the acknowledgement: the flag is spent the moment the
+    // person opens the agent whose work it announced.
+    unseen_clear(s_agents[s_index].id);
+    if (s_screen == SCR_HOME) render_home();
     cable_client_send_open(s_agents[s_index].id, NULL);   // a person's tap: no reason
     toast_show(TR(LV_SYMBOL_UPLOAD "  Ouvert sur l'ordinateur", LV_SYMBOL_UPLOAD "  Opened on the computer"),
                COL_ACCENT);
@@ -955,6 +1016,19 @@ static void build_home(void)
     lv_obj_set_style_bg_opa(s_badge, LV_OPA_COVER, 0);
     s_badge_label = lv_label_create(s_badge);
     lv_obj_center(s_badge_label);
+
+    // The "you have not looked at this" flag, opposite the fleet badge (4:30):
+    // a filled disc that stays until the card is touched. Not clickable on
+    // purpose — a tap over it belongs to the card underneath, like everywhere
+    // else on this screen.
+    s_unseen_dot = new_box(s_scr_home);
+    lv_obj_set_size(s_unseen_dot, 22, 22);
+    lv_obj_set_pos(s_unseen_dot, 176, 166);
+    lv_obj_set_style_radius(s_unseen_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_unseen_dot, lv_color_hex(COL_DONE), 0);
+    lv_obj_set_style_bg_opa(s_unseen_dot, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_unseen_dot, LV_OBJ_FLAG_CLICKABLE);
+    set_hidden(s_unseen_dot, true);
 
     // The card: agent name (1–2 lines), engine · machine, then the last line
     // using whatever height is left. Tap = agent.open.
@@ -1109,9 +1183,17 @@ static void render_home(void)
     for (int i = 0; i < CABLE_MAX_AGENTS; i++) {
         lv_obj_t *d = lv_obj_get_child(s_dots, i);
         set_hidden(d, i >= s_agent_count);
+        // A page holding unseen work takes the flag's colour: that is how the
+        // person finds WHICH agent moved without walking the whole carousel.
+        const uint32_t wait = i < s_agent_count ? unseen_color(s_agents[i].id) : 0;
         lv_obj_set_width(d, i == s_index ? 14 : 6);   // the current page is a pill
-        lv_obj_set_style_bg_color(d, lv_color_hex(i == s_index ? COL_TEXT : COL_LINE), 0);
+        lv_obj_set_style_bg_color(d, lv_color_hex(wait ? wait : (i == s_index ? COL_TEXT : COL_LINE)), 0);
     }
+
+    // The flag itself, on the card the person is looking at — until they touch it.
+    const uint32_t unseen = s_agent_count > 0 ? unseen_color(s_agents[s_index].id) : 0;
+    set_hidden(s_unseen_dot, unseen == 0);
+    if (unseen) lv_obj_set_style_bg_color(s_unseen_dot, lv_color_hex(unseen), 0);
 
     const bool running = s_agent_count > 0 && strcmp(s_agents[s_index].state, "running") == 0;
     if (!running) s_stop_armed = false;
@@ -1150,6 +1232,7 @@ static void refresh_agents(void)
     }
     if (s_index >= s_agent_count) s_index = s_agent_count > 0 ? s_agent_count - 1 : 0;
     run_track();
+    unseen_prune();
 }
 
 // ── question screen ─────────────────────────────────────────────────────────
@@ -1800,11 +1883,11 @@ static void on_agent_event(const char *agent_id, const char *state, const char *
                            bool notify, bool beep, void *ctx)
 {
     (void)ctx;
-    (void)state;
     mark(DIRTY_AGENTS);
     if (!notify && !beep) return;   // plain state moves ride on the dirty bit
     ui_ev_t ev = { .type = UI_EV_AGENT_EVENT };
     cable_utf8_copy(ev.d.agent.id, sizeof(ev.d.agent.id), agent_id);
+    cable_utf8_copy(ev.d.agent.state, sizeof(ev.d.agent.state), state);
     cable_utf8_copy(ev.d.agent.text, sizeof(ev.d.agent.text), text);
     ev.d.agent.notify = notify;
     ev.d.agent.beep = beep;
@@ -1891,8 +1974,16 @@ static void apply_ev(const ui_ev_t *ev)
     case UI_EV_AGENT_EVENT: {
         if (ev->d.agent.beep) buzzer_beep(BUZZER_BEEP_DONE);
         if (!ev->d.agent.notify) break;
-        // A finished turn: wake the screen and show its recap — this board
-        // has no buzzer, so the toast IS the notification.
+        // The flag lives longer than the toast and on the agent's own card:
+        // green when a turn finished, red when it failed. Restores, quiet
+        // summaries and silent sub-agent turns never reach this line, so
+        // history refills do not light anything up.
+        unseen_mark(ev->d.agent.id, strcmp(ev->d.agent.state, "error") == 0 ? COL_ERROR : COL_DONE);
+        // The event arrives AFTER this tick's dirty pass has already painted,
+        // and the loop's second pass returns early when nothing else is dirty:
+        // without this the flag waits for the next unrelated repaint and the
+        // person sees a card with no flag on it.
+        if (s_screen == SCR_HOME) render_home();
         ui_wake();
         const char *name = ev->d.agent.id;
         for (int i = 0; i < s_agent_count; i++) {
@@ -1921,7 +2012,14 @@ static void apply_ev(const ui_ev_t *ev)
     case UI_EV_TOAST:
         buzzer_beep(BUZZER_BEEP_ERROR);
         toast_show(ev->d.toast.text, COL_ERROR);
-        if (s_screen == SCR_HOME) fx_shake(s_card);
+        // `turn.error` flags its agent through here — the toast carries the
+        // text but no id, and the failed agent is the one in the `error` state
+        // the daemon just set. That failure is exactly what must survive the
+        // toast: a stopped quota is worth a red dot, not three seconds.
+        for (int i = 0; i < s_agent_count; i++) {
+            if (strcmp(s_agents[i].state, "error") == 0) { unseen_mark(s_agents[i].id, COL_ERROR); break; }
+        }
+        if (s_screen == SCR_HOME) { render_home(); fx_shake(s_card); }
         break;
     case UI_EV_FOCUS:
         for (int i = 0; i < s_agent_count; i++) {
