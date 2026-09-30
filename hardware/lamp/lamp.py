@@ -29,7 +29,8 @@ BAR_W = 12.0       # arm bar width
 L1, L2 = 115.0, 105.0  # lower / upper arm, pivot to pivot
 
 BOLT_D, BOLT_P = 10.0, 2.0   # knob screw thread
-FIT = 0.30                   # radial play of every printed thread (FDM, 0.4 nozzle)
+FIT = 0.35                   # radial play of every printed thread (FDM, 0.4 nozzle): 0.25 mm
+                             # per 45° flank, still > 0 on a printer that over-extrudes by 0.1 mm
 PASS_D = 10.8                # clearance hole for the knob screw
 
 BOARD_D = 39.4     # ESP32-2424S012C is 38.5 × 37 mm: cavity with 0.45 mm play
@@ -313,6 +314,27 @@ def fit_coupon():
     return head() ^ Manifold.cube([200, 200, GLASS_Z + 8.0]).translate([-100, -100, 0])
 
 
+GAUGE_FITS = (0.25, 0.30, 0.35, 0.40, 0.45)   # radial plays of the gauge's holes (1–5 dots)
+
+
+def thread_gauge():
+    """Print first (10 min): an arm-thick plate with five 10×2 holes cut at the
+    radial plays GAUGE_FITS, marked with 1 to 5 dots. Screw a printed knob into
+    each one: the tightest hole it enters by hand, without forcing, is your FIT."""
+    pitch = 16.0
+    w = (len(GAUGE_FITS) - 1) * pitch + 18.0
+    plate = Manifold.cube([w, 22.0, T]).translate([-9.0, -11.0, 0])
+    cuts = []
+    for k, fit in enumerate(GAUGE_FITS):
+        x, r = k * pitch, BOLT_D / 2 + fit
+        cuts.append(thread_rod(BOLT_D, BOLT_P, T + 0.02, grow=fit).translate([x, 0, -0.01]))
+        cuts.append(revolve([(0, -0.5), (r + 1.0, -0.5), (r - 0.6, 1.1), (0, 1.1)]).translate([x, 0, 0]))
+        cuts.append(revolve([(0, T - 1.1), (r - 0.6, T - 1.1), (r + 1.0, T + 0.5), (0, T + 0.5)]).translate([x, 0, 0]))
+        for j in range(k + 1):
+            cuts.append(cyl(0.8, 1.0, T - 0.6, 16).translate([x - k * 1.1 + j * 2.2, 8.2, 0]))
+    return plate - Manifold.batch_boolean(cuts, OpType.Add)
+
+
 # ── assembly (for previews / renders) ───────────────────────────────────────
 def pose(shoulder_deg=102.0, elbow_deg=-18.0, head_down_deg=14.0):
     """World transforms of every part: X forward, Z up, Y to the lamp's left."""
@@ -382,6 +404,7 @@ PARTS = {
     "shim_1mm": (lambda: shim(1.0), 1, "board depth spacers (use 0–2)"),
     "shim_2mm": (lambda: shim(2.0), 1, ""),
     "cable_clip": (cable_clip, 3, "hold the USB cable along the arms"),
+    "thread_gauge": (thread_gauge, 1, "print first: picks FIT for your printer"),
     "fit_coupon": (fit_coupon, 1, "print first: board fit + shade thread check"),
     "washer": (washer, 3, "optional friction washers (TPU/PETG), one per joint"),
 }
@@ -412,6 +435,11 @@ def check():
         print(f"thread {d:g}×{p_:g}: overlap {v:.3f} mm³")
         if v > 0.01:
             bad.append(f"thread {d}x{p_} binds")
+        # real prints: each surface may be off by ±0.1 mm → what is left per 45° flank
+        depth = 0.5 * p_ * 0.8
+        gap = FIT * math.cos(math.radians(45))
+        print(f"   {gap:.2f} mm per flank, {gap - 0.2:+.2f} if both parts print 0.1 mm fat; "
+              f"{(depth - FIT) / depth:.0%} of the thread depth engaged")
     # 3. the USB-C plug (overmold 12.4 × 6.5, entering radially under the head)
     #    at every plausible port depth: 4–9 mm behind the glass
     hm, sm = built["head"], built["shade"].translate([0, 0, SHADE_MOUTH_Z])
@@ -429,7 +457,7 @@ def check():
     #    short bridge. (Threads have 45° flanks by construction; their helical
     #    mesh has micro-facets a raw face count would misread as overhangs.)
     for k in ("base", "base_lid", "shoulder", "jam_nut", "lower_arm", "upper_arm", "knob", "head", "shade",
-              "cable_clip", "fit_coupon"):
+              "cable_clip", "fit_coupon", "thread_gauge"):
         tm = to_trimesh(built[k])
         n, c, area = tm.face_normals, tm.triangles_center, tm.area_faces
         flat = (n[:, 2] < -0.9999) & (c[:, 2] > 0.2)
