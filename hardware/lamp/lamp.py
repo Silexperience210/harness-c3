@@ -406,22 +406,56 @@ SCREWED = (("knob", "lower_arm", 17.0, 4.0, (0.0, 0.0), (0.0, 0.0), BOLT_P),
 def rayon_profil(mesh, axe, z, exterieur, n=720):
     """Rayon de la surface de filet autour de l'axe, a hauteur z.
 
-    Des rayons partent de l'axe ; on releve le rayon du premier obstacle vers
-    l'exterieur du male (la crete), vers l'interieur de la femelle (le fond du
-    creux). Lire les sommets du maillage ne dit rien : les faces planes en
-    contiennent a n'importe quel rayon."""
-    orig = np.tile([axe[0], axe[1], z], (n, 1))
-    th = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
-    dirs = np.column_stack([np.cos(th), np.sin(th), np.zeros(n)])
-    loc, idx, _ = mesh.ray.intersects_location(orig, dirs, multiple_hits=True)
-    if len(loc) == 0:
+    On coupe la piece par le plan z : chaque triangle qui traverse le plan donne
+    un SEGMENT (le plan 2D), et chaque rayon partant de l'axe est intersecte avec
+    tous ces segments. Le rayon d'intersection le plus GRAND est la crete du
+    filet d'un male, le plus PETIT le fond du creux d'une femelle.
+
+    Prendre les simples points de traversee des aretes ne suffit pas : ils
+    remplissent a peine 130 secteurs sur 720 et l'appariement des phases compare
+    alors des points sans rapport (mesure fausse de 5,6 mm au lieu de 0,35).
+
+    Les chemins tout faits de trimesh sont a ecarter ici : `mesh.ray` reclame
+    `rtree` et `mesh.section` reclame `scipy`, aucune des deux n'etant installee
+    par l'integration continue (manifold3d + trimesh + numpy seulement)."""
+    tri = mesh.vertices[mesh.faces]
+    sel = (tri[:, :, 2].min(axis=1) <= z) & (tri[:, :, 2].max(axis=1) >= z)
+    tri = tri[sel]
+    if len(tri) == 0:
         return None
-    r = np.hypot(loc[:, 0] - axe[0], loc[:, 1] - axe[1])
+    zs = tri[:, :, 2]
+    xy = tri[:, :, :2] - np.asarray(axe, dtype=float)
+    bouts = np.full((len(tri), 2, 2), np.nan)
+    compte = np.zeros(len(tri), dtype=int)
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        za, zb = zs[:, a], zs[:, b]
+        croise = (za - z) * (zb - z) <= 0.0
+        if not croise.any():
+            continue
+        pente = zb - za
+        u = np.where(np.abs(pente) > 1e-12,
+                     (z - za) / np.where(pente == 0.0, 1.0, pente), 0.0)
+        point = xy[:, a] + u[:, None] * (xy[:, b] - xy[:, a])
+        place = np.clip(compte, 0, 1)
+        lignes = np.arange(len(tri))[croise]
+        bouts[lignes, place[croise]] = point[croise]
+        compte += croise
+    garde = compte >= 2
+    if not garde.any():
+        return None
+    A, B = bouts[garde, 0], bouts[garde, 1]
+    ex, ey = B[:, 0] - A[:, 0], B[:, 1] - A[:, 1]
     out = np.full(n, np.nan)
-    for k in range(n):
-        sel = idx == k
-        if sel.any():
-            out[k] = r[sel].max() if exterieur else r[sel].min()
+    for j, th in enumerate(np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)):
+        dx, dy = math.cos(th), math.sin(th)
+        det = ex * dy - ey * dx
+        ok = np.abs(det) > 1e-12
+        with np.errstate(invalid="ignore", divide="ignore"):
+            s = (-A[:, 0] * ey + ex * A[:, 1]) / np.where(ok, det, 1.0)
+            t = (dx * A[:, 1] - A[:, 0] * dy) / np.where(ok, det, 1.0)
+        bon = ok & (s > 1e-9) & (t >= -1e-9) & (t <= 1.0 + 1e-9)
+        if bon.any():
+            out[j] = s[bon].max() if exterieur else s[bon].min()
     return out
 
 
