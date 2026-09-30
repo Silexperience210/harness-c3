@@ -45,6 +45,16 @@ LID_THREAD_D, LID_P, LID_H = 86.0, 3.0, 6.0
 STUD_D, STUD_P = 16.0, 2.0
 
 SEG = 96           # circle resolution
+THREAD_SEG = 96    # segments per thread pitch (see the note below)
+
+# Segments par pas dans l'extrusion vrillee des filetages. 24 ne suffisait pas :
+# la surface reglee entre deux anneaux tournes rentre DANS le profil nominal —
+# mesure sur le filet 46x2, le fond sortait 0.185 mm trop mince et la crete
+# 0.113 mm, ce qui mangeait plus de la moitie du jeu. Inoffensif la ou le male
+# est une tige nue (les deux surfaces reculent ensemble), fatal pour l'abat-jour,
+# dont l'alesage atteint le rayon de fond NOMINAL : le creux aminci restait
+# rempli et le jeu tombait a 0.165 mm au lieu de 0.35. A 96, le profil grave
+# reste a 0.012 mm du nominal (mesure : voir jeu_filet dans --check).
 
 
 # ── primitives ──────────────────────────────────────────────────────────────
@@ -65,7 +75,7 @@ def cyl(r, h, z0=0.0, n=SEG):
     return Manifold.cylinder(h, r, r, n).translate([0, 0, z0])
 
 
-def thread_rod(d_major, pitch, length, grow=0.0, n=96, flat=0.2):
+def thread_rod(d_major, pitch, length, grow=0.0, n=64, flat=0.2):
     """Single-start right-hand thread with 45° flanks: a twisted extrusion of
     r(θ) = r_minor + depth·tri(θ/2π). `grow` enlarges it radially (the cutter
     for a nut)."""
@@ -80,7 +90,7 @@ def thread_rod(d_major, pitch, length, grow=0.0, n=96, flat=0.2):
         r = r_minor + depth * tri
         th = 2 * math.pi * u
         pts.append((r * math.cos(th), r * math.sin(th)))
-    div = max(8, int(length / pitch * 24))
+    div = max(8, int(length / pitch * THREAD_SEG))
     return Manifold.extrude(poly(pts), length, div, 360.0 * length / pitch)
 
 
@@ -384,6 +394,55 @@ def pose(shoulder_deg=102.0, elbow_deg=-18.0, head_down_deg=14.0):
     }
 
 
+# (male, femelle, z du male, z de la femelle, axe male, axe femelle, pas)
+SCREWED = (("knob", "lower_arm", 17.0, 4.0, (0.0, 0.0), (0.0, 0.0), BOLT_P),
+           ("knob", "upper_arm", 17.0, 4.0, (0.0, 0.0), (L2, 0.0), BOLT_P),
+           ("shoulder", "base", 8.0, 14.0, (0.0, 0.0), (0.0, 0.0), STUD_P),
+           ("shoulder", "jam_nut", 8.0, 3.0, (0.0, 0.0), (0.0, 0.0), STUD_P),
+           ("base_lid", "base", 3.0, 3.0, (0.0, 0.0), (0.0, 0.0), LID_P),
+           ("shade", "head", 20.0, 3.0, (0.0, 0.0), (0.0, 0.0), 2.0))
+
+
+def rayon_profil(mesh, axe, z, exterieur, n=720):
+    """Rayon de la surface de filet autour de l'axe, a hauteur z.
+
+    Des rayons partent de l'axe ; on releve le rayon du premier obstacle vers
+    l'exterieur du male (la crete), vers l'interieur de la femelle (le fond du
+    creux). Lire les sommets du maillage ne dit rien : les faces planes en
+    contiennent a n'importe quel rayon."""
+    orig = np.tile([axe[0], axe[1], z], (n, 1))
+    th = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    dirs = np.column_stack([np.cos(th), np.sin(th), np.zeros(n)])
+    loc, idx, _ = mesh.ray.intersects_location(orig, dirs, multiple_hits=True)
+    if len(loc) == 0:
+        return None
+    r = np.hypot(loc[:, 0] - axe[0], loc[:, 1] - axe[1])
+    out = np.full(n, np.nan)
+    for k in range(n):
+        sel = idx == k
+        if sel.any():
+            out[k] = r[sel].max() if exterieur else r[sel].min()
+    return out
+
+
+def jeu_filet(male, femelle, z_male, z_femelle, axe_male=(0.0, 0.0), axe_femelle=(0.0, 0.0)):
+    """Jeu radial minimal d'un couple visse, mesure sur les PIECES exportees.
+
+    Comparer thread_rod a lui-meme grossi de FIT est vrai par construction et ne
+    dit rien des pieces : ce test-la a laisse passer l'abat-jour, dont l'alesage
+    atteint le rayon de fond nominal alors que le creux grave sortait 0.185 mm
+    trop mince (resolution d'extrusion) — l'alesage remplissait le creux et le
+    jeu tombait a 0.165 mm pour un FIT de 0.35. Ici on lit les surfaces
+    reellement exportees, au meilleur alignement de phase (celui ou les
+    chanfreins d'entree amenent la piece quand on la visse)."""
+    pm = rayon_profil(male, axe_male, z_male, True)
+    pf = rayon_profil(femelle, axe_femelle, z_femelle, False)
+    if pm is None or pf is None:
+        return None
+    jeux = [np.nanmin(pf - np.roll(pm, s)) for s in range(len(pm))]
+    return float(np.nanmax(jeux))
+
+
 def to_trimesh(m):
     mesh = m.to_mesh()
     return trimesh.Trimesh(vertices=np.asarray(mesh.vert_properties)[:, :3],
@@ -435,11 +494,24 @@ def check():
         print(f"thread {d:g}×{p_:g}: overlap {v:.3f} mm³")
         if v > 0.01:
             bad.append(f"thread {d}x{p_} binds")
-        # real prints: each surface may be off by ±0.1 mm → what is left per 45° flank
-        depth = 0.5 * p_ * 0.8
-        gap = FIT * math.cos(math.radians(45))
-        print(f"   {gap:.2f} mm per flank, {gap - 0.2:+.2f} if both parts print 0.1 mm fat; "
-              f"{(depth - FIT) / depth:.0%} of the thread depth engaged")
+    # 2 bis. the real prints. The figures above are the generator against itself,
+    #        true by construction; the ones that matter are measured on the parts,
+    #        groove included. Each surface may be off by ±0.1 mm, so what is left
+    #        per 45° flank is (measured play × cos 45°) − 0.2.
+    tm = {k: to_trimesh(built[k]) for k in ("knob", "lower_arm", "upper_arm", "shoulder",
+                                            "base", "jam_nut", "base_lid", "shade", "head")}
+    for a, b, za, zb, ax_a, ax_b, pitch in SCREWED:
+        jeu = jeu_filet(tm[a], tm[b], za, zb, ax_a, ax_b)
+        if jeu is None:
+            bad.append(f"{a} → {b}: thread profile unreadable")
+            continue
+        flanc = jeu * math.cos(math.radians(45))
+        depth = 0.5 * pitch * 0.8
+        print(f"fit {a:9s} → {b:10s} play {jeu:.3f} mm radial ({flanc:.3f} mm per flank, "
+              f"{flanc - 0.2:+.3f} if both parts print 0.1 mm fat, "
+              f"{(depth - jeu) / depth:.0%} of the depth engaged)")
+        if not (0.6 * FIT <= jeu <= 1.5 * FIT):
+            bad.append(f"{a} → {b}: play {jeu:.3f} mm instead of {FIT:g}")
     # 3. the USB-C plug (overmold 12.4 × 6.5, entering radially under the head)
     #    at every plausible port depth: 4–9 mm behind the glass
     hm, sm = built["head"], built["shade"].translate([0, 0, SHADE_MOUTH_Z])

@@ -86,10 +86,19 @@ the main README.
 `python3 lamp.py --check` reviews it in software and exits 1 on a problem
 (CI runs it on every push, with `--verify-stl`: the committed STLs must be
 what the generator produces):
-collisions in the assembled pose, every printed thread pair (no contact at
-`FIT`), the USB-C plug's path into the socket at every plausible port depth,
-the flat ceilings of each part in print orientation (all must be short
-bridges), and the centre of mass over the base with and without ballast.
+collisions in the assembled pose, the **radial play of every screwed pair,
+measured on the exported parts** (it must come out at `FIT` ± 50 %, so the
+figure is what the printer gets, not what the design intended), the USB-C
+plug's path into the socket at every plausible port depth, the flat ceilings
+of each part in print orientation (all must be short bridges), and the centre
+of mass over the base with and without ballast.
+
+The play test reads the *parts*, not the generator: comparing `thread_rod` with
+itself grown by `FIT` is true by construction, and it hid the shade — whose own
+bore reaches the *nominal* root radius, so when the engraved groove came out
+thin (extrusion resolution, `THREAD_SEG`) the bore filled it and the play fell
+to 0.165 mm against a nominal 0.35. `--check` prints the nominal figure and the
+measured one; trust the measured one.
 
 ## Regenerating
 
@@ -103,9 +112,9 @@ Main parameters (top of `lamp.py`): arm lengths `L1`/`L2`, plate `T`,
 The video: `video/make_video.py voice|render|compose` (pyrender + OSMesa,
 Piper TTS, ffmpeg).
 
-**Limits**: generated and checked in software (watertight parts, no
-collisions in the assembled pose, male/female threads mesh at `FIT`), not
-yet printed by me: do the fit check.
+**Limits**: generated and checked in software (watertight parts, no collisions
+in the assembled pose, every screwed pair's play measured on the exported
+parts), not yet printed by me: do the fit check.
 
 ---
 
@@ -127,7 +136,9 @@ boîtier si elle en a un), un câble **USB-A → USB-C**, ~150 g de lest,
 (pied : 40 %), buse 0,4. Filetages à flancs 45°, jeu radial 0,35 mm (`FIT`) :
 0,25 mm par flanc, ça se visse encore à la main si les deux pièces sortent
 0,1 mm trop grasses, avec 56 % du filet en prise. Les articulations tiennent
-par le serrage des faces, pas par un filet dur.
+par le serrage des faces, pas par un filet dur. Ce jeu est **mesuré sur les
+pièces** par `--check`, pas déduit du profil nominal : c'est ce qui a révélé
+que l'abat-jour ne recevait que 0,165 mm.
 
 **Test d'ajustement d'abord** : imprimez `thread_gauge` et une molette, vissez
 la molette dans chaque trou (1 à 5 points = 0,25 / 0,30 / 0,35 / 0,40 / 0,45 mm) :
