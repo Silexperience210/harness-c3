@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "buttons.h"
 #include "cable_client.h"
 #include "cable_frame.h"
 #include "display.h"
@@ -277,6 +278,37 @@ static void hold_at(int x, int y, uint32_t ms)
     step(ms);
     sim_touch(x, y, false);
     step(400);
+}
+
+// BOOT held: the board's only button, as button B (screen off / on).
+static void press_boot_long(void)
+{
+    const btn_event_t ev = BTN_EVENT_B_LONG;
+    xQueueSend(ui_button_queue(), &ev, 0);
+}
+
+// Leave the dial untouched until its screen is dark on its own: the lamp's
+// hour (lamp auto 30) or the off delay on home (lamp auto 0). 1 s passes.
+static void rest_until_dark(void)
+{
+    for (int s = 0; s < 2 * 3600 && display_get_backlight() != 0; s++) step_coarse(1000);
+}
+
+// What the daemon pushes when the dial attaches (PROTOCOL.md §3.5), then the
+// history restore: the whole list at once, nothing in it is news.
+static void daemon_refill(void)
+{
+    daemon_says("{\"t\":\"agents.begin\"}");
+    daemon_says("{\"t\":\"agent\",\"id\":\"a1\",\"name\":\"Réparer l'écran de connexion\",\"engine\":\"claude\","
+                "\"machineId\":\"mac-local\",\"machine\":\"MacBook Pro\"}");
+    daemon_says("{\"t\":\"agent\",\"id\":\"a2\",\"name\":\"Firmware C3\",\"engine\":\"codex\","
+                "\"machineId\":\"mac-local\",\"machine\":\"MacBook Pro\"}");
+    daemon_says("{\"t\":\"agent\",\"id\":\"a3\",\"name\":\"Docs\",\"engine\":\"cursor\"}");
+    daemon_says("{\"t\":\"agents.end\",\"total\":7,\"tab\":\"t1\"}");
+    daemon_says("{\"t\":\"notif.replace\",\"items\":[]}");
+    daemon_says("{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"Ancien tour\",\"text\":\"…\",\"restore\":true}");
+    daemon_says("{\"t\":\"summary\",\"agentId\":\"a2\",\"recap\":\"Ancien tour\",\"text\":\"…\",\"restore\":true}");
+    daemon_says("{\"t\":\"focus\",\"agentId\":\"a2\"}");
 }
 
 static void drag(int x0, int y0, int x1, int y1)
@@ -805,6 +837,118 @@ static void scenario(void)
     daemon_says("{\"t\":\"question.close\",\"agentId\":\"a2\",\"id\":\"q10\"}");
     step(400);
     CHECK(screen_is("home") && !on_screen("? Question"), "closed elsewhere: no chip (%s)", ui_sim_screen());
+
+    // ── Agent work gives the face back (both builds) ──
+    // A turn that STARTS wakes the dial and leaves the lamp (lit or dark), as
+    // a finished turn does; a reconnect's refill, history, pings, focus and a
+    // running turn's status lines do not. Off by hand (BOOT long), a turn
+    // leaves the screen off — a question still wakes it.
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a2\"}");
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a3\"}");
+    step(400);
+    rest_until_dark();
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    CHECK(screen_is("lamp") && display_get_backlight() == 0, "left alone: the lamp, then dark (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+#else
+    CHECK(screen_is("home") && display_get_backlight() == 0, "left alone: the dial goes dark (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+#endif
+    const char *dark_on = screen_is("lamp") ? "lamp" : "home";
+    // A reconnect while dark: the link drops, comes back, the whole list and
+    // the history arrive in one burst — and pings keep coming. Nothing lights.
+    s_daemon_alive = false;
+    step_coarse(16000);
+    CHECK(!cable_client_is_connected() && display_get_backlight() == 0, "silence: session down, still dark (bl %d)",
+          display_get_backlight());
+    s_daemon_alive = true;
+    daemon_says("{\"t\":\"welcome\",\"proto\":3,\"app\":\"harness\","
+                "\"machine\":{\"id\":\"mac-local\",\"name\":\"MacBook Pro\"},\"selected\":\"mac-local\"}");
+    daemon_refill();
+    step(2000);
+    CHECK(cable_client_is_connected() && screen_is(dark_on) && display_get_backlight() == 0,
+          "reconnect + full refill: still dark, still %s (%s, bl %d)", dark_on, ui_sim_screen(),
+          display_get_backlight());
+    daemon_refill();                 // the list again, as on a tab switch
+    step_coarse(10000);              // two pings
+    CHECK(screen_is(dark_on) && display_get_backlight() == 0, "second refill + pings: still dark (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+    // A turn starts: the dial, lit, off the lamp.
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Revue du code…\"}");
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness() && lamp_glow_pct() < 10,
+          "dark + a turn starts: the dial, lit (%s, bl %d, glow %d%%)", ui_sim_screen(), display_get_backlight(),
+          lamp_glow_pct());
+    shot("turn_wakes_dark");
+    // The start counts as activity; then, calm, the lamp comes back on its own.
+    const int64_t start_us = last_touch_us();
+    CHECK(ms_since(start_us) < 1000, "the start restarted the idle count (%u ms)", (unsigned)ms_since(start_us));
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    step(29000 - ms_since(start_us));
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "29 s after the start: still the dial (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    step(2000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "31 s after the start: the lamp again (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    // A running turn's next status line is not a new start: the lamp holds.
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Lancement des tests…\"}");
+    step(1000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "status line on a running turn: the lamp holds (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+#else
+    step(61000 - ms_since(start_us));
+    CHECK(screen_is("home") && display_get_backlight() > 0 && display_get_backlight() < settings_brightness(),
+          "61 s after the start: dimmed, still the dial (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Lancement des tests…\"}");
+    step(1000);
+    CHECK(display_get_backlight() < settings_brightness(), "status line on a running turn: still dimmed (bl %d)",
+          display_get_backlight());
+    tap_at(120, 30);                 // dimmed: this touch only wakes it
+    hold_at(120, 116, 900);
+#endif
+    // A lit lamp too: a turn that starts gives the dial back.
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "on the lamp, lit (%s, glow %d%%)", ui_sim_screen(),
+          lamp_glow_pct());
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a2\",\"text\":\"Compilation…\"}");
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness() && lamp_glow_pct() < 10,
+          "lit lamp + a turn starts: the dial (%s, bl %d, glow %d%%)", ui_sim_screen(), display_get_backlight(),
+          lamp_glow_pct());
+    // A finished turn on the lamp: the dial, the toast, and the green flag.
+    hold_at(120, 116, 900);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "hold: the lamp (%s, glow %d%%)", ui_sim_screen(),
+          lamp_glow_pct());
+    step(1000);
+    daemon_says("{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"Revue terminée\",\"text\":\"…\"}");
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness() && lamp_glow_pct() < 10 &&
+          on_screen("Revue terminée"), "lamp + a finished turn: the dial and its toast (%s, bl %d, glow %d%%)",
+          ui_sim_screen(), display_get_backlight(), lamp_glow_pct());
+    step(3200);
+    CHECK(pixel_flag_green(187, 177) || dots_flag() == 1, "…and the finished agent keeps its green flag");
+    shot("turn_done_leaves_lamp");
+    // Off by hand: a turn that starts leaves it off…
+    press_boot_long();
+    step(1500);
+    CHECK(display_get_backlight() == 0, "BOOT long: off by hand (bl %d)", display_get_backlight());
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a2\"}");
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a2\",\"text\":\"Nouvelle passe…\"}");
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a3\",\"text\":\"Relecture…\"}");
+    step(1000);
+    CHECK(screen_is("home") && display_get_backlight() == 0, "off by hand + turns start: still off (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+    // …a question does not.
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a3\",\"id\":\"q11\",\"questions\":[{\"key\":\"Ok ?\","
+                "\"q\":\"On relit la doc ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
+    step(400);
+    CHECK(screen_is("question") && on_screen("On relit") && display_get_backlight() == settings_brightness(),
+          "off by hand + a question: it wakes and takes the face (%s, bl %d)", ui_sim_screen(),
+          display_get_backlight());
+    swipe(40, 120, 200, 120);
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a3\",\"id\":\"q11\"}");
+    step(400);
+    CHECK(screen_is("home") && !on_screen("? Question"), "closed elsewhere: home (%s)", ui_sim_screen());
 
     // The daemon goes quiet → session down after 15 s → "Not connected".
     s_daemon_alive = false;

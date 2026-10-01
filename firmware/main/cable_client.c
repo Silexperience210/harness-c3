@@ -271,12 +271,19 @@ static void set_agent_state(const char *agent_id, const char *state, const char 
 {
     CLIENT_LOCK();
     cable_agent_t *a = find_agent(agent_id);
+    bool started = false;
     if (a) {
+        // A turn BEGINS only on the move from rest: `turn.started` repeats
+        // through a turn (each status line), and is also the "waiting for
+        // your answer" line while a question is open. A list refill never
+        // comes through here (rows carry who, not what).
+        started = strcmp(state, "running") == 0 && strcmp(a->state, "running") != 0 &&
+                  strcmp(a->state, "waiting") != 0;
         copy_str(a->state, sizeof(a->state), state);
         if (text && text[0]) copy_str(a->summary, sizeof(a->summary), text);
     }
     CLIENT_UNLOCK();
-    if (s_ui.agent_event) s_ui.agent_event(agent_id, state, text ? text : "", notify, beep, s_ui.ctx);
+    if (s_ui.agent_event) s_ui.agent_event(agent_id, state, text ? text : "", notify, beep, started, s_ui.ctx);
 }
 
 static void clear_agents(void)

@@ -59,6 +59,14 @@ their questions with a tap, stop a runaway turn, and scroll the window.
   question that arrives wakes the screen. Delay: *Screen power → Lamp off
   after N seconds* (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = never); the other
   screens keep their own dim / off delays.
+  **Agent work gives the face back**: a turn that **starts** (an agent goes
+  to "running") or **finishes** wakes the screen and, from the lamp — lit or
+  dark — returns to the dial as a tap would (your level and tone are kept);
+  once things are calm, the lamp comes back after its 30 s. A reconnect or
+  history refill (the whole agent list at once), the daemon's pings, focus,
+  tab or window updates, the unread list, and a running turn's next status
+  line do **not** wake anything. Switched off by hand (BOOT long), the
+  screen stays off for a starting turn; a question still wakes it.
 - **Settings** (pull down): brightness (kept in NVS), firmware / touch chip,
   free RAM, link error counters.
 - Speaks the upstream **cable** protocol (binary framing + JSON vocabulary)
@@ -245,6 +253,16 @@ faire défiler la fenêtre.
   Délai : *menuconfig → Screen power → Lamp off after N seconds*
   (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = jamais) ; les autres écrans
   gardent leurs propres délais d'atténuation et d'extinction.
+  **Le travail des agents rend la face** : un tour qui **démarre** (un agent
+  passe à « en cours ») ou qui **se termine** rallume l'écran et, depuis la
+  lampe — allumée ou noire —, rend le cadran comme le ferait un toucher
+  (intensité et teinte gardées) ; au calme, la lampe revient après ses 30 s.
+  Une reconnexion ou un rechargement de l'historique (toute la liste
+  d'agents d'un coup), les pings du daemon, le focus, les onglets ou
+  fenêtres, la liste non lue et la ligne d'état suivante d'un tour déjà en
+  cours ne réveillent **rien**. Éteint à la main (appui long sur BOOT),
+  l'écran reste éteint pour un tour qui démarre ; une question le réveille
+  quand même.
 - **Réglages** (tirez vers le bas) : luminosité mémorisée, version, puce
   tactile, RAM libre, compteurs d'erreurs du lien.
 

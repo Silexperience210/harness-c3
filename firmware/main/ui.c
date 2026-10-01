@@ -107,7 +107,7 @@ typedef struct {
     ui_ev_type_t type;
     union {
         struct { bool up; char name[CABLE_NAME_MAX]; } session;
-        struct { char id[ID_MAX]; char text[96]; char state[16]; bool notify, beep; } agent;
+        struct { char id[ID_MAX]; char text[96]; char state[16]; bool notify, beep, started; } agent;
         struct { char text[112]; } toast;
         struct { char id[ID_MAX]; } focus;
     } d;
@@ -605,6 +605,17 @@ static void ui_wake(void)
     s_forced_off = false;
     lv_display_trigger_activity(NULL);
     power_update();
+}
+
+// Agent work the person should see: wake the screen and, from the lamp (lit
+// or dark), give the face back the way a tap would — close_lamp() keeps the
+// lamp's level and tone, and restarts the idle count, so the lamp comes back
+// on its own once things are calm again.
+static void close_lamp(void);
+static void agent_wake(void)
+{
+    ui_wake();
+    if (s_screen == SCR_LAMP) close_lamp();
 }
 
 static bool screen_is_dark(void)
@@ -1909,17 +1920,18 @@ static void on_session(bool up, const char *machine_name, void *ctx)
 static void on_agents_changed(void *ctx) { (void)ctx; mark(DIRTY_AGENTS); }
 
 static void on_agent_event(const char *agent_id, const char *state, const char *text,
-                           bool notify, bool beep, void *ctx)
+                           bool notify, bool beep, bool started, void *ctx)
 {
     (void)ctx;
     mark(DIRTY_AGENTS);
-    if (!notify && !beep) return;   // plain state moves ride on the dirty bit
+    if (!notify && !beep && !started) return;   // plain state moves ride on the dirty bit
     ui_ev_t ev = { .type = UI_EV_AGENT_EVENT };
     cable_utf8_copy(ev.d.agent.id, sizeof(ev.d.agent.id), agent_id);
     cable_utf8_copy(ev.d.agent.state, sizeof(ev.d.agent.state), state);
     cable_utf8_copy(ev.d.agent.text, sizeof(ev.d.agent.text), text);
     ev.d.agent.notify = notify;
     ev.d.agent.beep = beep;
+    ev.d.agent.started = started;
     push_ev(&ev);
 }
 
@@ -2002,6 +2014,10 @@ static void apply_ev(const ui_ev_t *ev)
         break;
     case UI_EV_AGENT_EVENT: {
         if (ev->d.agent.beep) buzzer_beep(BUZZER_BEEP_DONE);
+        // A turn began: the face comes back — unless the screen was switched
+        // off by hand (BOOT long press); that gesture holds until a question
+        // or a person ends it.
+        if (ev->d.agent.started && !s_forced_off) agent_wake();
         if (!ev->d.agent.notify) break;
         // The flag lives longer than the toast and on the agent's own card:
         // green when a turn finished, red when it failed. Restores, quiet
@@ -2013,7 +2029,7 @@ static void apply_ev(const ui_ev_t *ev)
         // without this the flag waits for the next unrelated repaint and the
         // person sees a card with no flag on it.
         if (s_screen == SCR_HOME) render_home();
-        ui_wake();
+        agent_wake();
         const char *name = ev->d.agent.id;
         for (int i = 0; i < s_agent_count; i++) {
             if (strcmp(s_agents[i].id, ev->d.agent.id) == 0) { name = s_agents[i].name; break; }

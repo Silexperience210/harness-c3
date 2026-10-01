@@ -140,8 +140,11 @@ typedef struct {
     void (*agents_changed)(void *ctx);
     // An agent's derived state moved (turn.started/done/error, summary).
     // `text` is the status line or recap; beep/notify policy is the UI's.
+    // `started`: this moved a listed agent INTO "running" from rest — a turn
+    // began. A status-line update on a running turn, the "waiting for your
+    // answer" line of a question and an id the list does not hold are not.
     void (*agent_event)(const char *agent_id, const char *state, const char *text,
-                        bool notify, bool beep, void *ctx);
+                        bool notify, bool beep, bool started, void *ctx);
     // The unread list changed: replayed whole (notif.replace), one row dropped
     // (notif.seen), or a question row cleared because it was answered/closed.
     // Always the complete current list. Max CABLE_NOTIF_MAX rows.
