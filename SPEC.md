@@ -171,8 +171,11 @@ Screens (adapted from upstream UI_FLOWS.md to 240×240 + touch):
 7. **Toasts** (tap to dismiss): finished turns (recap), errors, confirmations.
 
 Power: dim to ¼ after `HARNESS_DIM_AFTER_S` (60 s), off after `HARNESS_OFF_AFTER_S`
-(600 s, never while a question waits); a question or a finished turn wakes the screen; a
-touch or button press on a dark screen only wakes it; BOOT long = off/on.
+(600 s, never while a question waits); anything the daemon pushes (turn.*, summary,
+question, question.close, notif.*, toast, focus) and a session going down or up wakes the
+screen — even after BOOT long — and leaves the lamp; pings, the keepalive `welcome` and a
+plain agent-list refill do not. A touch or button press on a dark screen only wakes it;
+BOOT long = off/on.
 
 Round-panel rule: critical text inside the ~170 px inscribed square, controls inside the
 ring (r ≈ 110). The simulator (§7) fails any tap on a control outside the glass.

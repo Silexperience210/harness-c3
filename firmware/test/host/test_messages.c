@@ -70,7 +70,7 @@ static int  s_ev_focus;
 static char s_ev_focus_id[ID_MAX];
 static int  s_ev_agent_event;
 static char s_ev_agent_state[16];
-static int  s_ev_notify, s_ev_beep, s_ev_started;
+static int  s_ev_notify, s_ev_beep;
 
 static void ev_session(bool up, const char *machine_name, void *ctx)
 {
@@ -80,14 +80,13 @@ static void ev_session(bool up, const char *machine_name, void *ctx)
 }
 static void ev_agents_changed(void *ctx) { (void)ctx; s_ev_agents_changed++; }
 static void ev_agent_event(const char *agent_id, const char *state, const char *text,
-                           bool notify, bool beep, bool started, void *ctx)
+                           bool notify, bool beep, void *ctx)
 {
     (void)agent_id; (void)text; (void)ctx;
     s_ev_agent_event++;
     snprintf(s_ev_agent_state, sizeof(s_ev_agent_state), "%s", state);
     if (notify) s_ev_notify++;
     if (beep) s_ev_beep++;
-    if (started) s_ev_started++;
 }
 static void ev_notif(const cable_notif_t *items, int count, void *ctx)
 {
@@ -126,7 +125,7 @@ static void reset_all(void)
     s_sent_count = 0;
     s_ev_session_up = s_ev_session_down = s_ev_agents_changed = 0;
     s_ev_question = s_ev_question_closed = s_ev_toast = s_ev_notif = 0;
-    s_ev_focus = s_ev_agent_event = s_ev_notify = s_ev_beep = s_ev_started = 0;
+    s_ev_focus = s_ev_agent_event = s_ev_notify = s_ev_beep = 0;
     s_ev_agent_state[0] = '\0';
     cable_client_set_identity("0.1.0-c3", CABLE_HW_NAME, "28:84:85:90:5F:78");
     cable_client_set_ui(&(cable_client_ui_t){
@@ -409,43 +408,6 @@ static void test_turn_lifecycle(void)
     cable_client_list_agents(agents, 8);
     CHECK(strcmp(agents[0].state, "error") == 0, "state after turn.error '%s'", agents[0].state);
     CHECK(s_ev_toast == 1 && strcmp(s_ev_toast_text, "boom") == 0, "turn.error toast");
-}
-
-// `started` (the UI wakes the dial on it) is the move from rest into a turn —
-// never a status-line update, a question's "waiting" line, a list refill, a
-// history restore, or an agent the list does not hold.
-static void test_turn_started_flag(void)
-{
-    reset_all();
-    start_session();
-    feed_agent_list();
-
-    feed("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Working…\"}");
-    CHECK(s_ev_started == 1, "idle → running is a start (%d)", s_ev_started);
-    feed("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Running tests\"}");
-    CHECK(s_ev_started == 1, "a status line on a running turn is not a start (%d)", s_ev_started);
-
-    // The list refill keeps the running state and sends no agent event at all.
-    const int events = s_ev_agent_event;
-    feed_agent_list();
-    feed("{\"t\":\"summary\",\"agentId\":\"a2\",\"recap\":\"old\",\"text\":\"t\",\"restore\":true}");
-    CHECK(s_ev_started == 1 && s_ev_agent_event == events + 1, "refill + restore: no start (%d, %d events)",
-          s_ev_started, s_ev_agent_event - events);
-
-    feed("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q1\","
-         "\"questions\":[{\"key\":\"k\",\"q\":\"Ok?\",\"options\":[\"Yes\",\"No\"]}]}");
-    feed("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Waiting for your answer\"}");
-    CHECK(s_ev_started == 1, "waiting → running (the question's line) is not a start (%d)", s_ev_started);
-
-    feed("{\"t\":\"turn.started\",\"agentId\":\"zz\",\"text\":\"Working…\"}");
-    CHECK(s_ev_started == 1, "an agent the list does not hold is not a start (%d)", s_ev_started);
-
-    feed("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
-    feed("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Again\"}");
-    CHECK(s_ev_started == 2, "done → running is a start (%d)", s_ev_started);
-    feed("{\"t\":\"turn.error\",\"agentId\":\"a2\",\"message\":\"boom\"}");
-    feed("{\"t\":\"turn.started\",\"agentId\":\"a2\",\"text\":\"Retry\"}");
-    CHECK(s_ev_started == 3, "error → running is a start (%d)", s_ev_started);
 }
 
 static void test_summary_variants(void)
@@ -877,7 +839,6 @@ int main(void)
     test_agent_list_no_window();
     test_nested_p_envelope();
     test_turn_lifecycle();
-    test_turn_started_flag();
     test_summary_variants();
     test_notif_replace();
     test_question_flow();

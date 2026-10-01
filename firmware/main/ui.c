@@ -107,7 +107,7 @@ typedef struct {
     ui_ev_type_t type;
     union {
         struct { bool up; char name[CABLE_NAME_MAX]; } session;
-        struct { char id[ID_MAX]; char text[96]; char state[16]; bool notify, beep, started; } agent;
+        struct { char id[ID_MAX]; char text[96]; char state[16]; bool notify, beep; } agent;
         struct { char text[112]; } toast;
         struct { char id[ID_MAX]; } focus;
     } d;
@@ -145,6 +145,7 @@ static int              s_q_cursor;                 // button navigation
 static cJSON           *s_answers;
 
 static bool    s_forced_off;       // BOOT long press
+static atomic_bool s_activity;     // the daemon pushed something worth seeing (cable callbacks + session transitions set it, ui_step() clears it)
 static int64_t s_last_alive_us;
 
 // ── LVGL objects ────────────────────────────────────────────────────────────
@@ -607,15 +608,18 @@ static void ui_wake(void)
     power_update();
 }
 
-// Agent work the person should see: wake the screen and, from the lamp (lit
-// or dark), give the face back the way a tap would — close_lamp() keeps the
-// lamp's level and tone, and restarts the idle count, so the lamp comes back
-// on its own once things are calm again.
+// Anything the daemon pushes is activity the person should see: the screen
+// comes back on and, from the lamp (lit or dark), the face is given back the
+// way a tap would — close_lamp() keeps the lamp's level and tone and restarts
+// the idle count, so the lamp comes back on its own once things are calm.
+// A screen switched off by hand (BOOT long) does NOT stay off: the owner's
+// rule is that every activity wakes the dial, and the lamp is for rest only.
 static void close_lamp(void);
-static void agent_wake(void)
+static void activity_wake(void)
 {
+    s_forced_off = false;
+    if (s_screen == SCR_LAMP) { close_lamp(); return; }
     ui_wake();
-    if (s_screen == SCR_LAMP) close_lamp();
 }
 
 static bool screen_is_dark(void)
@@ -1899,6 +1903,7 @@ static void go_home(lv_screen_load_anim_t anim)
 // ── cable_client event sinks (LINK READER TASK — flag / queue and return) ──
 
 static void mark(unsigned bits) { atomic_fetch_or(&s_dirty, bits); }
+static void mark_activity(void) { atomic_store(&s_activity, true); }
 
 static void push_ev(const ui_ev_t *ev)
 {
@@ -1920,18 +1925,21 @@ static void on_session(bool up, const char *machine_name, void *ctx)
 static void on_agents_changed(void *ctx) { (void)ctx; mark(DIRTY_AGENTS); }
 
 static void on_agent_event(const char *agent_id, const char *state, const char *text,
-                           bool notify, bool beep, bool started, void *ctx)
+                           bool notify, bool beep, void *ctx)
 {
     (void)ctx;
     mark(DIRTY_AGENTS);
-    if (!notify && !beep && !started) return;   // plain state moves ride on the dirty bit
+    // turn.started/done/error and summaries. A list refill never comes through
+    // here (on_agents_changed); a history restore does, but only right after
+    // an attach, which is activity on its own.
+    mark_activity();
+    if (!notify && !beep) return;   // plain state moves ride on the dirty bit
     ui_ev_t ev = { .type = UI_EV_AGENT_EVENT };
     cable_utf8_copy(ev.d.agent.id, sizeof(ev.d.agent.id), agent_id);
     cable_utf8_copy(ev.d.agent.state, sizeof(ev.d.agent.state), state);
     cable_utf8_copy(ev.d.agent.text, sizeof(ev.d.agent.text), text);
     ev.d.agent.notify = notify;
     ev.d.agent.beep = beep;
-    ev.d.agent.started = started;
     push_ev(&ev);
 }
 
@@ -1939,20 +1947,23 @@ static void on_notif(const cable_notif_t *items, int count, void *ctx)
 {
     (void)items; (void)count; (void)ctx;
     mark(DIRTY_NOTIF);   // the UI re-reads the whole list under the client lock
+    mark_activity();
 }
 
 static void on_question(const cable_question_t *q, void *ctx)
 {
     (void)q; (void)ctx;
     mark(DIRTY_QUESTIONS);
+    mark_activity();
     push_ev(&(ui_ev_t){ .type = UI_EV_QUESTION });
 }
 
-static void on_question_closed(void *ctx) { (void)ctx; mark(DIRTY_QUESTIONS); }
+static void on_question_closed(void *ctx) { (void)ctx; mark(DIRTY_QUESTIONS); mark_activity(); }
 
 static void on_toast(const char *text, void *ctx)
 {
     (void)ctx;
+    mark_activity();
     ui_ev_t ev = { .type = UI_EV_TOAST };
     cable_utf8_copy(ev.d.toast.text, sizeof(ev.d.toast.text), text);
     push_ev(&ev);
@@ -1961,6 +1972,7 @@ static void on_toast(const char *text, void *ctx)
 static void on_focus(const char *agent_id, void *ctx)
 {
     (void)ctx;
+    mark_activity();
     ui_ev_t ev = { .type = UI_EV_FOCUS };
     cable_utf8_copy(ev.d.focus.id, sizeof(ev.d.focus.id), agent_id);
     push_ev(&ev);
@@ -1980,6 +1992,7 @@ static void apply_dirty(void)
         // the question they were answering.
         if (up != s_connected) {
             s_connected = up;
+            mark_activity();   // a real connect/disconnect, not the 15 s keepalive
             if (up) {
                 ESP_LOGI(TAG, "connected to %s", s_machine_name);
                 if (s_screen == SCR_BOOT || s_screen == SCR_OFFLINE) go_home(LV_SCR_LOAD_ANIM_FADE_IN);
@@ -2014,10 +2027,6 @@ static void apply_ev(const ui_ev_t *ev)
         break;
     case UI_EV_AGENT_EVENT: {
         if (ev->d.agent.beep) buzzer_beep(BUZZER_BEEP_DONE);
-        // A turn began: the face comes back — unless the screen was switched
-        // off by hand (BOOT long press); that gesture holds until a question
-        // or a person ends it.
-        if (ev->d.agent.started && !s_forced_off) agent_wake();
         if (!ev->d.agent.notify) break;
         // The flag lives longer than the toast and on the agent's own card:
         // green when a turn finished, red when it failed. Restores, quiet
@@ -2029,7 +2038,6 @@ static void apply_ev(const ui_ev_t *ev)
         // without this the flag waits for the next unrelated repaint and the
         // person sees a card with no flag on it.
         if (s_screen == SCR_HOME) render_home();
-        agent_wake();
         const char *name = ev->d.agent.id;
         for (int i = 0; i < s_agent_count; i++) {
             if (strcmp(s_agents[i].id, ev->d.agent.id) == 0) { name = s_agents[i].name; break; }
@@ -2177,10 +2185,17 @@ static void ui_step(void)
     if (!display_lock(100)) return;
     apply_dirty();
     ui_ev_t ev;
+    // No mark_activity() here: the callbacks already raised it for what counts,
+    // and UI_EV_SESSION rides this queue on EVERY 15 s keepalive `welcome` —
+    // counting it would wake the dial every 15 s and the lamp would never come.
     while (xQueueReceive(s_ev_queue, &ev, 0) == pdTRUE) apply_ev(&ev);
     apply_dirty();   // events above may have raised more
     btn_event_t btn;
     while (xQueueReceive(s_btn_queue, &btn, 0) == pdTRUE) handle_button(btn);
+    // Every event the daemon pushed this pass pulls the dial back — from the
+    // lamp, and from a screen switched off by hand — before the repaint, so the
+    // face and the backlight come back in the same frame.
+    if (atomic_exchange(&s_activity, false)) activity_wake();
     lv_timer_handler();
     lamp_auto();
     power_update();

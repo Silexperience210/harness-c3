@@ -294,9 +294,9 @@ static void rest_until_dark(void)
     for (int s = 0; s < 2 * 3600 && display_get_backlight() != 0; s++) step_coarse(1000);
 }
 
-// What the daemon pushes when the dial attaches (PROTOCOL.md §3.5), then the
-// history restore: the whole list at once, nothing in it is news.
-static void daemon_refill(void)
+// The agent list alone, streamed whole — what a tab switch or a re-fetch
+// brings. Rows say who an agent is, never what it is doing.
+static void daemon_list(void)
 {
     daemon_says("{\"t\":\"agents.begin\"}");
     daemon_says("{\"t\":\"agent\",\"id\":\"a1\",\"name\":\"Réparer l'écran de connexion\",\"engine\":\"claude\","
@@ -305,6 +305,13 @@ static void daemon_refill(void)
                 "\"machineId\":\"mac-local\",\"machine\":\"MacBook Pro\"}");
     daemon_says("{\"t\":\"agent\",\"id\":\"a3\",\"name\":\"Docs\",\"engine\":\"cursor\"}");
     daemon_says("{\"t\":\"agents.end\",\"total\":7,\"tab\":\"t1\"}");
+}
+
+// What the daemon pushes when the dial attaches (PROTOCOL.md §3.5), then the
+// history restore and the window's focus.
+static void daemon_refill(void)
+{
+    daemon_list();
     daemon_says("{\"t\":\"notif.replace\",\"items\":[]}");
     daemon_says("{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"Ancien tour\",\"text\":\"…\",\"restore\":true}");
     daemon_says("{\"t\":\"summary\",\"agentId\":\"a2\",\"recap\":\"Ancien tour\",\"text\":\"…\",\"restore\":true}");
@@ -564,14 +571,16 @@ static void scenario(void)
     // A lamp does not dim, and a touch on it is never taken for a wake-up.
     step(70000);
     CHECK(display_get_backlight() == settings_lamp_level(), "no dimming in lamp mode (%d)", display_get_backlight());
-    // A question takes the face, then hands it back to the lamp.
+    // A question takes the face, then hands it back to the lamp: answering is
+    // a LOCAL tap, not the daemon pushing new work, so the lamp you had
+    // deliberately opened is exactly where you land once the question is done.
     daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q7\",\"questions\":[{\"key\":\"Go ?\",\"q\":\"On déploie ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
     step(400);
     CHECK(screen_is("question") && on_screen("On déploie"), "a question takes the face from the lamp");
     tap_text("Oui");
     CHECK(tap_label(LV_SYMBOL_OK, true), "answer it");
     step(600);
-    CHECK(screen_is("lamp"), "answered: back to the lamp (%s)", ui_sim_screen());
+    CHECK(screen_is("lamp"), "answered locally: back to the lamp you had open (%s)", ui_sim_screen());
     // Tap → home.
     tap_at(120, 120);
     step(400);
@@ -642,21 +651,32 @@ static void scenario(void)
     CHECK(screen_is("home") && on_screen("? Question") && lamp_glow_pct() < 10,
           "pending question + 60 s idle on home: no lamp (%s, glow %d%%)", ui_sim_screen(), lamp_glow_pct());
     shot("home_question_idle_60s");
-    // Closed elsewhere: nothing waits any more, the dial has rested 60 s → lamp.
+    // Closed elsewhere: that is activity too, so it wakes the dial — the lamp
+    // only comes back once this new rest has also run its own 30 s.
     daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q8\"}");
     step(1000);
-    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "question gone after a long rest: the lamp (%s, glow %d%%)",
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "question closed elsewhere: activity woke the dial, not the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    step(31000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "30 s of real rest after that: the lamp (%s, glow %d%%)",
           ui_sim_screen(), lamp_glow_pct());
     tap_at(120, 120);
     step(400);
-    // An unread question row (the window's list) keeps the face as well.
+    // An unread question row (the window's list) keeps the face as well —
+    // its arrival is activity, so it wakes the dial right away; from there,
+    // rest alone must not turn it into the lamp while the row stands.
     daemon_says("{\"t\":\"notif.replace\",\"items\":[{\"agentId\":\"a2\",\"name\":\"Firmware C3\",\"question\":true}]}");
+    step(400);
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "unread row arrives: activity, dial stays up (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
     step(31000);
     CHECK(screen_is("home") && lamp_glow_pct() < 10, "unread question row + 31 s: no lamp (%s, glow %d%%)",
           ui_sim_screen(), lamp_glow_pct());
     daemon_says("{\"t\":\"notif.replace\",\"items\":[]}");
     step(200);
-    CHECK(screen_is("lamp"), "row gone: the lamp (%s)", ui_sim_screen());
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "row gone: that is activity too, dial stays up (%s)", ui_sim_screen());
+    step(31000);
+    CHECK(screen_is("lamp"), "30 s of real rest with nothing left pending: the lamp (%s)", ui_sim_screen());
     tap_at(120, 120);
     step(400);
 
@@ -838,11 +858,12 @@ static void scenario(void)
     step(400);
     CHECK(screen_is("home") && !on_screen("? Question"), "closed elsewhere: no chip (%s)", ui_sim_screen());
 
-    // ── Agent work gives the face back (both builds) ──
-    // A turn that STARTS wakes the dial and leaves the lamp (lit or dark), as
-    // a finished turn does; a reconnect's refill, history, pings, focus and a
-    // running turn's status lines do not. Off by hand (BOOT long), a turn
-    // leaves the screen off — a question still wakes it.
+    // ── Activity gives the face back (both builds) ──
+    // Everything the daemon pushes wakes the dial and leaves the lamp (lit or
+    // dark), and so does the link going or coming back. What is not news keeps
+    // it dark: the keepalive `welcome`, pings, a plain list refill. A screen
+    // switched off by hand (BOOT long) wakes too: the lamp and the dark come
+    // from rest or from the hand, never stay against activity.
     daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
     daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a2\"}");
     daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a3\"}");
@@ -856,23 +877,74 @@ static void scenario(void)
           ui_sim_screen(), display_get_backlight());
 #endif
     const char *dark_on = screen_is("lamp") ? "lamp" : "home";
-    // A reconnect while dark: the link drops, comes back, the whole list and
-    // the history arrive in one burst — and pings keep coming. Nothing lights.
-    s_daemon_alive = false;
-    step_coarse(16000);
-    CHECK(!cable_client_is_connected() && display_get_backlight() == 0, "silence: session down, still dark (bl %d)",
+    // The keepalive: every 15 s the dial greets again and the daemon answers
+    // with the same `welcome` (UI_EV_SESSION each time). Not a transition, so
+    // not activity — counting it would wake the dial every 15 s for good.
+    daemon_says("{\"t\":\"welcome\",\"proto\":3,\"app\":\"harness\","
+                "\"machine\":{\"id\":\"mac-local\",\"name\":\"MacBook Pro\"},\"selected\":\"mac-local\"}");
+    step_coarse(10000);              // two pings too
+    CHECK(cable_client_is_connected() && screen_is(dark_on) && display_get_backlight() == 0,
+          "keepalive welcome + pings: still dark, still %s (%s, bl %d)", dark_on, ui_sim_screen(),
           display_get_backlight());
+    // The link drops. The drop IS activity: the dial shows "Not connected"
+    // rather than a lamp (or a black glass) quietly lying about the link.
+    s_daemon_alive = false;
+    for (int i = 0; i < 200 && cable_client_is_connected(); i++) step(100);
+    CHECK(!cable_client_is_connected(), "silence: the session goes down");
+    step(400);
+    CHECK(screen_is("offline") && display_get_backlight() == settings_brightness(),
+          "the drop wakes the dial on \"Not connected\" (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    // The silence that follows is rest: dark again on its own.
+    rest_until_dark();
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    CHECK(screen_is("lamp") && display_get_backlight() == 0, "silence after the drop: the lamp, then dark (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+#else
+    CHECK(screen_is("offline") && display_get_backlight() == 0,
+          "silence after the drop: dark on \"Not connected\" (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+#endif
+    // It comes back. The reconnect alone — the `welcome`, before the attach
+    // burst — is activity as well: the face, lit.
     s_daemon_alive = true;
     daemon_says("{\"t\":\"welcome\",\"proto\":3,\"app\":\"harness\","
                 "\"machine\":{\"id\":\"mac-local\",\"name\":\"MacBook Pro\"},\"selected\":\"mac-local\"}");
-    daemon_refill();
-    step(2000);
-    CHECK(cable_client_is_connected() && screen_is(dark_on) && display_get_backlight() == 0,
-          "reconnect + full refill: still dark, still %s (%s, bl %d)", dark_on, ui_sim_screen(),
+    step(400);
+    CHECK(cable_client_is_connected() && screen_is("home") && display_get_backlight() == settings_brightness() &&
+          lamp_glow_pct() < 10, "reconnect: the dial, lit (%s, bl %d, glow %d%%)", ui_sim_screen(),
+          display_get_backlight(), lamp_glow_pct());
+    daemon_refill();                 // list, unread list, history, focus
+    step(400);
+    // Calm again: back to dark by the same delays as after any activity.
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    step(31000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "31 s after the reconnect: the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+#endif
+    rest_until_dark();
+    CHECK(screen_is(dark_on) && display_get_backlight() == 0, "calm after the reconnect: dark again on %s (%s, bl %d)",
+          dark_on, ui_sim_screen(), display_get_backlight());
+    // Back and dark, what is not news keeps it so: the list alone (a tab
+    // switch), another keepalive, pings.
+    daemon_list();
+    daemon_says("{\"t\":\"welcome\",\"proto\":3,\"app\":\"harness\","
+                "\"machine\":{\"id\":\"mac-local\",\"name\":\"MacBook Pro\"},\"selected\":\"mac-local\"}");
+    step_coarse(10000);
+    CHECK(screen_is(dark_on) && display_get_backlight() == 0,
+          "list refill + keepalive + pings: still dark, still %s (%s, bl %d)", dark_on, ui_sim_screen(),
           display_get_backlight());
-    daemon_refill();                 // the list again, as on a tab switch
-    step_coarse(10000);              // two pings
-    CHECK(screen_is(dark_on) && display_get_backlight() == 0, "second refill + pings: still dark (%s, bl %d)",
+    // The window moved to another agent (the person is using Harness): news.
+    daemon_says("{\"t\":\"focus\",\"agentId\":\"a1\"}");
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness(),
+          "dark + the window's focus moves: the dial, lit (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    rest_until_dark();
+    // A bare toast from the daemon: news too.
+    daemon_says("{\"t\":\"toast\",\"text\":\"Quota bientôt atteint\"}");
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness() && on_screen("Quota"),
+          "dark + a toast: the dial, lit, the toast on it (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    rest_until_dark();
+    CHECK(screen_is(dark_on) && display_get_backlight() == 0, "and dark again on %s (%s, bl %d)", dark_on,
           ui_sim_screen(), display_get_backlight());
     // A turn starts: the dial, lit, off the lamp.
     daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Revue du code…\"}");
@@ -891,20 +963,26 @@ static void scenario(void)
     step(2000);
     CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "31 s after the start: the lamp again (%s, glow %d%%)",
           ui_sim_screen(), lamp_glow_pct());
-    // A running turn's next status line is not a new start: the lamp holds.
+    // The owner's rule is literal: EVERY activity wakes the dial — even a
+    // status line repeated on a turn that was already running.
     daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Lancement des tests…\"}");
-    step(1000);
-    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "status line on a running turn: the lamp holds (%s, glow %d%%)",
+    step(400);
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "a status line too wakes the dial off the lamp (%s, glow %d%%)",
           ui_sim_screen(), lamp_glow_pct());
+    // Calm again: the lamp comes back on its own, as it would after any activity.
+    step(31000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "30 s of rest after that status line: the lamp again (%s)",
+          ui_sim_screen());
 #else
     step(61000 - ms_since(start_us));
     CHECK(screen_is("home") && display_get_backlight() > 0 && display_get_backlight() < settings_brightness(),
           "61 s after the start: dimmed, still the dial (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    // Same rule without the lamp: a status line is still activity, so it
+    // undims the screen (and restarts the idle count) like any other event.
     daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Lancement des tests…\"}");
-    step(1000);
-    CHECK(display_get_backlight() < settings_brightness(), "status line on a running turn: still dimmed (bl %d)",
+    step(400);
+    CHECK(display_get_backlight() == settings_brightness(), "status line on a running turn: activity, full again (bl %d)",
           display_get_backlight());
-    tap_at(120, 30);                 // dimmed: this touch only wakes it
     hold_at(120, 116, 900);
 #endif
     // A lit lamp too: a turn that starts gives the dial back.
@@ -928,17 +1006,23 @@ static void scenario(void)
     step(3200);
     CHECK(pixel_flag_green(187, 177) || dots_flag() == 1, "…and the finished agent keeps its green flag");
     shot("turn_done_leaves_lamp");
-    // Off by hand: a turn that starts leaves it off…
+    // Off by hand: the owner's rule is that activity still wakes the dial —
+    // the manual off is not a lock. The first turn that starts right after
+    // undoes it, just like any other activity would.
     press_boot_long();
     step(1500);
     CHECK(display_get_backlight() == 0, "BOOT long: off by hand (bl %d)", display_get_backlight());
     daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a2\"}");
     daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a2\",\"text\":\"Nouvelle passe…\"}");
     daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a3\",\"text\":\"Relecture…\"}");
-    step(1000);
-    CHECK(screen_is("home") && display_get_backlight() == 0, "off by hand + turns start: still off (%s, bl %d)",
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness(),
+          "off by hand + turns start: activity wakes it anyway (%s, bl %d)",
           ui_sim_screen(), display_get_backlight());
-    // …a question does not.
+    // A question wakes it too, same as before.
+    press_boot_long();
+    step(1500);
+    CHECK(display_get_backlight() == 0, "off by hand again (bl %d)", display_get_backlight());
     daemon_says("{\"t\":\"question\",\"agentId\":\"a3\",\"id\":\"q11\",\"questions\":[{\"key\":\"Ok ?\","
                 "\"q\":\"On relit la doc ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
     step(400);
