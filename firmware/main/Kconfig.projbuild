@@ -216,20 +216,44 @@ menu "Harness C3 Configuration"
                 dial turns into the lamp, at the level and tone kept in NVS.
                 A tap brings the face back and the count starts again. Never
                 while a question waits, nor from the settings, scrollpad or
-                boot screens. A lamp does not dim, so with this below the dim
-                and off delays those only apply to the other screens; a
-                screen that already went dark stays dark. 0 = never: dim and
-                off behave exactly as before.
+                boot screens. A lamp never dims and does not follow the dim
+                and off delays above: it keeps its level until
+                HARNESS_LAMP_OFF_AFTER_S, then goes dark. A screen that
+                already went dark stays dark. 0 = never: dim and off behave
+                exactly as before.
 
                 FR : laissé sur sa face (cadran ou « Non connecté »), le
                 cadran devient la lampe, au niveau et à la teinte gardés en
                 NVS. Un toucher rend la face et le compte repart de zéro.
                 Jamais tant qu'une question attend, ni depuis les réglages,
                 le pavé de défilement ou l'écran de démarrage. Une lampe ne
-                s'assombrit pas : réglé sous les délais d'assombrissement et
-                d'extinction, ceux-ci ne valent plus que pour les autres
-                écrans ; un écran déjà éteint reste éteint. 0 = jamais :
-                assombrissement et extinction comme avant.
+                s'assombrit jamais et ne suit pas les délais
+                d'assombrissement et d'extinction ci-dessus : elle garde son
+                niveau jusqu'à HARNESS_LAMP_OFF_AFTER_S, puis s'éteint. Un
+                écran déjà éteint reste éteint. 0 = jamais : assombrissement
+                et extinction comme avant.
+        config HARNESS_LAMP_OFF_AFTER_S
+            int "Lamp off after N seconds without interaction (0 = never)"
+            range 0 86400
+            default 3600
+            help
+                EN: a lamp (opened by hand or on its own) keeps its level,
+                undimmed, until nobody has touched the dial for this long,
+                then goes dark. A tap on the dark lamp only wakes it, at the
+                lamp level; a second tap gives the face back. A waiting
+                question keeps it lit, as on every other screen. Only the
+                lamp: the other screens still follow the dim and off delays
+                above. 0 = never: the lamp stays lit until touched.
+
+                FR : une lampe (ouverte à la main ou toute seule) garde son
+                niveau, sans s'assombrir, jusqu'à ce que personne n'ait
+                touché le cadran depuis ce délai, puis s'éteint. Un toucher
+                sur la lampe éteinte ne fait que la réveiller, au niveau de
+                la lampe ; un second toucher rend la face. Une question en
+                attente la garde allumée, comme sur tous les autres écrans.
+                La lampe seulement : les autres écrans suivent toujours les
+                délais d'assombrissement et d'extinction ci-dessus. 0 =
+                jamais : la lampe reste allumée jusqu'au prochain toucher.
 
     endmenu
 

@@ -561,8 +561,16 @@ static int dim_level(void)
 static int power_target(void)
 {
     if (s_forced_off) return 0;
-    if (s_screen == SCR_LAMP) return s_lamp_level;     // a lamp does not dim
     const uint32_t idle_ms = lv_display_get_inactive_time(NULL);
+    if (s_screen == SCR_LAMP) {
+        // A lamp does not dim, but it does not burn all night either: dark
+        // after HARNESS_LAMP_OFF_AFTER_S untouched (unless a question waits).
+        if (s_q_pending == 0 && CONFIG_HARNESS_LAMP_OFF_AFTER_S > 0 &&
+            idle_ms >= (uint32_t)CONFIG_HARNESS_LAMP_OFF_AFTER_S * 1000u) {
+            return 0;
+        }
+        return s_lamp_level;
+    }
     // A waiting question never lets the screen go fully dark.
     if (s_q_pending == 0 && CONFIG_HARNESS_OFF_AFTER_S > 0 &&
         idle_ms >= (uint32_t)CONFIG_HARNESS_OFF_AFTER_S * 1000u) {
@@ -696,9 +704,10 @@ static void go_home(lv_screen_load_anim_t anim);
 
 // ── lamp mode: the dial as a light ─────────────────────────────────────────
 // The screen becomes a bulb: a radial glow in one of five tones, the
-// backlight at the lamp's own level (never dimmed). Drag ↑↓ = brightness,
-// ←→ = tone, tap = leave. A question still takes the face, then hands it
-// back. A dot at 12 o'clock tells what the agents are doing.
+// backlight at the lamp's own level (never dimmed; dark only after
+// HARNESS_LAMP_OFF_AFTER_S untouched). Drag ↑↓ = brightness, ←→ = tone,
+// tap = leave. A question still takes the face, then hands it back. A dot at
+// 12 o'clock tells what the agents are doing.
 
 static const struct { const char *fr, *en; uint32_t center, mid, edge; } LAMP_TONES[LAMP_WARMTHS] = {
     { "Bougie", "Candle",   0xffd49a, 0xff9a3c, 0x4a1a03 },
@@ -758,7 +767,10 @@ static void lamp_dot_update(void)
     if (col) lv_obj_set_style_bg_color(s_lamp_dot, lv_color_hex(col), 0);
 }
 
-static void open_lamp(void)
+// `touched`: opened by a person (hold, Settings → Lamp, back from a question)
+// rather than by lamp_auto(). Only a person restarts the idle count, so the
+// lamp's off delay runs from the last touch, not from the automatic switch.
+static void open_lamp(bool touched)
 {
     static bool explained;
     s_lamp_level = settings_lamp_level();
@@ -781,7 +793,7 @@ static void open_lamp(void)
     } else {
         lamp_hint_level();
     }
-    lv_display_trigger_activity(NULL);
+    if (touched) lv_display_trigger_activity(NULL);
     power_update();
 }
 
@@ -849,7 +861,7 @@ static void lamp_touch(lv_event_t *e)
 static void lamp_long_pressed(lv_event_t *e)
 {
     (void)e;
-    open_lamp();
+    open_lamp(true);
 }
 
 // Left alone on a face at rest (home or offline), the dial becomes the lamp
@@ -863,7 +875,7 @@ static void lamp_auto(void)
     if (s_q_pending > 0 || s_notif_questions > 0) return;
     if (lv_display_get_inactive_time(NULL) < (uint32_t)CONFIG_HARNESS_LAMP_AUTO_AFTER_S * 1000u) return;
     if (power_target() == 0) return;
-    open_lamp();
+    open_lamp(false);   // not a touch: HARNESS_LAMP_OFF_AFTER_S still runs from the last one
 #endif
 }
 
@@ -1621,7 +1633,7 @@ static void settings_touch(lv_event_t *e)
 static void settings_lamp_clicked(lv_event_t *e)
 {
     (void)e;
-    open_lamp();
+    open_lamp(true);
 }
 
 static void build_settings(void)
@@ -1860,7 +1872,7 @@ static void go_home(lv_screen_load_anim_t anim)
 {
     if (s_lamp_resume) {                 // back to the lamp the question interrupted
         s_lamp_resume = false;
-        open_lamp();
+        open_lamp(true);
         return;
     }
     if (!s_connected) {

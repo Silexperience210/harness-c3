@@ -41,16 +41,22 @@ their questions with a tap, stop a runaway turn, and scroll the window.
   the screen. A tap on a dark screen only wakes it.
 - **Lamp mode** — the dial as a light, for the desk lamp it lives in: a
   radial glow in five tones (candle, warm, neutral, daylight, cool); drag
-  ↑↓ for brightness, ←→ for the tone, tap to leave. Never dimmed, works
-  offline, remembered in NVS; a question still takes the face and hands it
-  back, and a dot at 12 o'clock shows a running turn (blue), a question
-  (amber) or an error (red).
+  ↑↓ for brightness, ←→ for the tone, tap to leave. Never dimmed (only
+  switched off after an hour, below), works offline, remembered in NVS; a
+  question still takes the face and hands it back, and a dot at 12 o'clock
+  shows a running turn (blue), a question (amber) or an error (red).
   **It also comes on by itself**: after 30 s without a touch on the home or
   "Not connected" screen, the dial turns into the lamp (your level and
   tone); a tap gives the face back and the 30 s start over. Never while a
   question waits (on screen, behind the amber chip or in the unread list),
   nor from the settings or scrollpad. Delay: *Screen power → Become a lamp
   after N seconds* (`HARNESS_LAMP_AUTO_AFTER_S`, 0 = never).
+  **It does not burn all night**: one hour after the last touch (the switch
+  to the lamp is not a touch), the lamp goes dark. A tap wakes it — the
+  lamp again, at its level, and a fresh hour; a second tap gives the face
+  back. A waiting question keeps it lit. Delay: *Screen power → Lamp off
+  after N seconds* (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = never); the other
+  screens keep their own dim / off delays.
 - **Settings** (pull down): brightness (kept in NVS), firmware / touch chip,
   free RAM, link error counters.
 - Speaks the upstream **cable** protocol (binary framing + JSON vocabulary)
@@ -132,8 +138,9 @@ in menuconfig; if taps land in the wrong place, apply the same transform in
 Board, every pin, SPI clock (80 MHz on this board), panel orientation /
 colour order, touch transforms, default brightness, dim / off delays, the
 automatic lamp delay (`HARNESS_LAMP_AUTO_AFTER_S`, 30 s, 0 = never: dim and
-off then work exactly as before), UI language (Français / English), max
-agents held.
+off then work exactly as before), the lamp's own off delay
+(`HARNESS_LAMP_OFF_AFTER_S`, 3600 s, 0 = never; the lamp ignores the dim /
+off delays), UI language (Français / English), max agents held.
 
 ## Development
 
@@ -215,17 +222,25 @@ faire défiler la fenêtre.
 - **Mode lampe** : le cadran devient une lumière, pour la lampe de bureau
   qui l'accueille — une lueur radiale en cinq teintes (bougie, chaude,
   neutre, jour, froide) ; glissez ↑↓ pour l'intensité, ←→ pour la teinte,
-  touchez pour sortir. Jamais atténué, marche hors ligne, mémorisé ; une
-  question prend toujours l'écran puis le rend, et un point en haut dit si
-  un agent travaille (bleu), attend une réponse (ambre) ou a échoué (rouge).
+  touchez pour sortir. Jamais atténué (seulement éteint au bout d'une
+  heure, ci-dessous), marche hors ligne, mémorisé ; une question prend
+  toujours l'écran puis le rend, et un point en haut dit si un agent
+  travaille (bleu), attend une réponse (ambre) ou a échoué (rouge).
   **Elle s'allume aussi toute seule** : après 30 s sans toucher sur le
   cadran ou l'écran « Non connecté », le cadran devient la lampe (votre
   intensité, votre teinte) ; un toucher rend le cadran et les 30 s
   repartent de zéro. Jamais tant qu'une question attend (à l'écran, derrière
   la pastille ambre ou dans la liste non lue), ni depuis les réglages ou le
   pavé. Délai : *menuconfig → Screen power → Become a lamp after N seconds*
-  (`HARNESS_LAMP_AUTO_AFTER_S`, 0 = jamais : atténuation et extinction
-  comme avant).
+  (`HARNESS_LAMP_AUTO_AFTER_S`, 30 s, 0 = jamais : atténuation et
+  extinction comme avant).
+  **Elle ne brûle pas toute la nuit** : une heure après le dernier toucher
+  (la bascule en lampe n'en est pas un), la lampe s'éteint. Un toucher la
+  réveille — la lampe de nouveau, à son intensité, pour une nouvelle heure ;
+  un second toucher rend le cadran. Une question en attente la garde
+  allumée. Délai : *menuconfig → Screen power → Lamp off after N seconds*
+  (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = jamais) ; les autres écrans
+  gardent leurs propres délais d'atténuation et d'extinction.
 - **Réglages** (tirez vers le bas) : luminosité mémorisée, version, puce
   tactile, RAM libre, compteurs d'erreurs du lien.
 

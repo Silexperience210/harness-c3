@@ -11,6 +11,7 @@
 #include "cable_client.h"
 #include "cable_frame.h"
 #include "display.h"
+#include "esp_timer.h"
 #include "settings.h"
 #include "sim.h"
 #include "touch.h"
@@ -36,22 +37,52 @@ static bool        s_daemon_alive;
 
 // Advance simulated time in 10 ms UI-loop steps. Like the device, the session
 // machine ticks every 100 ms; a live daemon pings every 5 s.
+static uint32_t s_since_poll, s_since_ping;
+
+static void daemon_ping(void)
+{
+    if (!s_daemon_alive || s_since_ping < 5000) return;
+    s_since_ping = 0;
+    const char *ping = "{\"t\":\"ping\"}";
+    cable_client_handle_frame(1, CABLE_TYPE_JSON, (const uint8_t *)ping, strlen(ping), NULL);
+}
+
 static void step(uint32_t ms)
 {
-    static uint32_t since_poll, since_ping;
     for (uint32_t t = 0; t < ms; t += 10) {
         sim_clock_advance_ms(10);
-        since_poll += 10;
-        since_ping += 10;
-        if (since_poll >= 100) { since_poll = 0; cable_client_poll(); }
-        if (s_daemon_alive && since_ping >= 5000) {
-            since_ping = 0;
-            const char *ping = "{\"t\":\"ping\"}";
-            cable_client_handle_frame(1, CABLE_TYPE_JSON, (const uint8_t *)ping, strlen(ping), NULL);
-        }
+        s_since_poll += 10;
+        s_since_ping += 10;
+        if (s_since_poll >= 100) { s_since_poll = 0; cable_client_poll(); }
+        daemon_ping();
         ui_sim_step();
     }
 }
+
+// The same in 1 s UI passes, for the long stretches where nothing moves on
+// screen (the lamp's hour: 3 600 passes instead of 360 000). The session
+// machine still ticks every pass, a live daemon still pings every 5 s, so the
+// link stays up; a fade (1 step per pass) or an animation needs step().
+static void step_coarse(uint32_t ms)
+{
+    for (uint32_t t = 0; t < ms; t += 1000) {
+        sim_clock_advance_ms(1000);
+        s_since_ping += 1000;
+        cable_client_poll();
+        daemon_ping();
+        ui_sim_step();
+    }
+}
+
+// When LVGL last saw a finger, on the simulated clock. Taken right after a
+// touch, then kept: a bug that restarts LVGL's idle count later on cannot
+// move a deadline measured from it (ms_since).
+static int64_t last_touch_us(void)
+{
+    return esp_timer_get_time() - (int64_t)lv_display_get_inactive_time(NULL) * 1000;
+}
+
+static uint32_t ms_since(int64_t t_us) { return (uint32_t)((esp_timer_get_time() - t_us) / 1000); }
 
 static void daemon_says(const char *json)
 {
@@ -617,6 +648,54 @@ static void scenario(void)
     tap_at(120, 120);
     step(400);
     CHECK(screen_is("home"), "tap leaves it (%s)", ui_sim_screen());
+
+    // ── The lamp's hour (HARNESS_LAMP_OFF_AFTER_S = 3600, the shipped value) ──
+    // The auto lamp keeps its level, undimmed, until an hour after the last
+    // touch, then goes dark. Long stretches in 1 s passes (step_coarse), the
+    // fade down around the hour in 10 ms passes (1 backlight step per pass).
+    // Deadlines run from that tap on the sim clock (ms_since), not from
+    // LVGL's idle count, which the code under test could restart.
+    int64_t touch_us = last_touch_us();
+    CHECK(settings_lamp_level() < 100, "the 1 s fade window below needs a level < 100 (%d)", settings_lamp_level());
+    step(31000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(), "31 s: the lamp (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+    CHECK(lv_display_get_inactive_time(NULL) >= 31000, "the automatic switch is not a touch (idle %u ms)",
+          (unsigned)lv_display_get_inactive_time(NULL));
+    step_coarse(59 * 60000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90 && display_get_backlight() == settings_lamp_level(),
+          "59 min untouched: the lamp still lit at its level (%s, glow %d%%, bl %d)", ui_sim_screen(),
+          lamp_glow_pct(), display_get_backlight());
+    shot("lamp_59min");
+    step_coarse(3599000 - ms_since(touch_us));
+    CHECK(display_get_backlight() == settings_lamp_level(), "59 min 59 s: still lit (bl %d)", display_get_backlight());
+    step(3601000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == 0, "1 h 0 min 1 s: the lamp is dark (%s, bl %d, %u ms)",
+          ui_sim_screen(), display_get_backlight(), (unsigned)ms_since(touch_us));
+    // A tap on the dark lamp only wakes it — the lamp again, at its level.
+    m = mark();
+    tap_at(120, 120);
+    touch_us = last_touch_us();
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90 && display_get_backlight() == settings_lamp_level(),
+          "tap on the dark lamp: the lamp again, at its level (%s, glow %d%%, bl %d vs %d)", ui_sim_screen(),
+          lamp_glow_pct(), display_get_backlight(), settings_lamp_level());
+    CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
+    shot("lamp_hour_woken");
+    // The hour starts over from that tap: no dark lamp right after it…
+    CHECK(ms_since(touch_us) < 1000, "waking tap: idle count restarted (%u ms)", (unsigned)ms_since(touch_us));
+    step(5000);
+    CHECK(display_get_backlight() == settings_lamp_level(), "5 s after waking: still lit (bl %d)",
+          display_get_backlight());
+    // …nor 59 min later.
+    step_coarse(59 * 60000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(),
+          "59 min after waking: still lit (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    // A second tap gives the dial back; the link lived through the two hours.
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home") && lamp_glow_pct() < 10 && display_get_backlight() == settings_brightness(),
+          "second tap: the dial, at the UI brightness (%s, glow %d%%, bl %d)", ui_sim_screen(), lamp_glow_pct(),
+          display_get_backlight());
 #elif CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 0
     // HARNESS_LAMP_AUTO_AFTER_S = 0: no lamp on its own, the screen power
     // behaves as it always did — dim at 60 s, dark at 600 s.
@@ -638,6 +717,34 @@ static void scenario(void)
     tap_at(120, 116);   // on the card
     CHECK(display_get_backlight() == settings_brightness(), "tap wakes the screen");
     CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
+
+    // The lamp's hour holds without the automatic lamp too (a lamp opened by
+    // hand), and a waiting question keeps it lit, as on every other screen.
+    step(3200);   // the toast of the last tap
+    hold_at(120, 116, 900);
+    CHECK(screen_is("lamp"), "hold opens the lamp (%s)", ui_sim_screen());
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q9\",\"questions\":[{\"key\":\"Tag ?\","
+                "\"q\":\"On tague la version ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
+    step(400);
+    CHECK(screen_is("question"), "a question takes the face (%s)", ui_sim_screen());
+    swipe(40, 120, 200, 120);        // dismissed for later: back to the lamp it interrupted
+    CHECK(screen_is("lamp"), "dismissed: the lamp again, question still waiting (%s)", ui_sim_screen());
+    const int64_t touch_us = last_touch_us();
+    step_coarse(3601000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(),
+          "question waiting + 1 h untouched: the lamp stays lit (%s, bl %d)", ui_sim_screen(),
+          display_get_backlight());
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q9\"}");
+    step(2000);
+    CHECK(screen_is("lamp") && display_get_backlight() == 0, "question gone after the hour: the lamp goes dark (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+    tap_at(120, 120);
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(), "tap: the lamp again (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home") && display_get_backlight() == settings_brightness(), "second tap: the dial (%s, bl %d)",
+          ui_sim_screen(), display_get_backlight());
 #else
 #error "the scenario is timed for HARNESS_LAMP_AUTO_AFTER_S = 30 (default) or 0"
 #endif
