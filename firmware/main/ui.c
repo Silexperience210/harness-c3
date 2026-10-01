@@ -564,8 +564,9 @@ static int power_target(void)
     const uint32_t idle_ms = lv_display_get_inactive_time(NULL);
     if (s_screen == SCR_LAMP) {
         // A lamp does not dim, but it does not burn all night either: dark
-        // after HARNESS_LAMP_OFF_AFTER_S untouched (unless a question waits).
-        if (s_q_pending == 0 && CONFIG_HARNESS_LAMP_OFF_AFTER_S > 0 &&
+        // after HARNESS_LAMP_OFF_AFTER_S untouched, even while a question
+        // waits (it stays queued; a new one wakes the screen).
+        if (CONFIG_HARNESS_LAMP_OFF_AFTER_S > 0 &&
             idle_ms >= (uint32_t)CONFIG_HARNESS_LAMP_OFF_AFTER_S * 1000u) {
             return 0;
         }
@@ -705,9 +706,9 @@ static void go_home(lv_screen_load_anim_t anim);
 // ── lamp mode: the dial as a light ─────────────────────────────────────────
 // The screen becomes a bulb: a radial glow in one of five tones, the
 // backlight at the lamp's own level (never dimmed; dark only after
-// HARNESS_LAMP_OFF_AFTER_S untouched). Drag ↑↓ = brightness, ←→ = tone,
-// tap = leave. A question still takes the face, then hands it back. A dot at
-// 12 o'clock tells what the agents are doing.
+// HARNESS_LAMP_OFF_AFTER_S untouched, question waiting or not). Drag ↑↓ =
+// brightness, ←→ = tone, tap = leave. A question still takes the face, then
+// hands it back. A dot at 12 o'clock tells what the agents are doing.
 
 static const struct { const char *fr, *en; uint32_t center, mid, edge; } LAMP_TONES[LAMP_WARMTHS] = {
     { "Bougie", "Candle",   0xffd49a, 0xff9a3c, 0x4a1a03 },

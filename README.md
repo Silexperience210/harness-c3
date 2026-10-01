@@ -54,7 +54,9 @@ their questions with a tap, stop a runaway turn, and scroll the window.
   **It does not burn all night**: one hour after the last touch (the switch
   to the lamp is not a touch), the lamp goes dark. A tap wakes it — the
   lamp again, at its level, and a fresh hour; a second tap gives the face
-  back. A waiting question keeps it lit. Delay: *Screen power → Lamp off
+  back. It goes dark **even while a question waits**: the question stays
+  queued (the second tap brings the face back with its amber chip), and a
+  question that arrives wakes the screen. Delay: *Screen power → Lamp off
   after N seconds* (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = never); the other
   screens keep their own dim / off delays.
 - **Settings** (pull down): brightness (kept in NVS), firmware / touch chip,
@@ -237,8 +239,10 @@ faire défiler la fenêtre.
   **Elle ne brûle pas toute la nuit** : une heure après le dernier toucher
   (la bascule en lampe n'en est pas un), la lampe s'éteint. Un toucher la
   réveille — la lampe de nouveau, à son intensité, pour une nouvelle heure ;
-  un second toucher rend le cadran. Une question en attente la garde
-  allumée. Délai : *menuconfig → Screen power → Lamp off after N seconds*
+  un second toucher rend le cadran. Elle s'éteint **même si une question
+  attend** : la question reste en file (le second toucher rend le cadran
+  avec sa pastille ambre), et une question qui arrive réveille l'écran.
+  Délai : *menuconfig → Screen power → Lamp off after N seconds*
   (`HARNESS_LAMP_OFF_AFTER_S`, 3600, 0 = jamais) ; les autres écrans
   gardent leurs propres délais d'atténuation et d'extinction.
 - **Réglages** (tirez vers le bas) : luminosité mémorisée, version, puce

@@ -240,20 +240,26 @@ menu "Harness C3 Configuration"
                 EN: a lamp (opened by hand or on its own) keeps its level,
                 undimmed, until nobody has touched the dial for this long,
                 then goes dark. A tap on the dark lamp only wakes it, at the
-                lamp level; a second tap gives the face back. A waiting
-                question keeps it lit, as on every other screen. Only the
-                lamp: the other screens still follow the dim and off delays
-                above. 0 = never: the lamp stays lit until touched.
+                lamp level; a second tap gives the face back. It goes dark
+                even while a question waits: the question stays queued (the
+                face comes back with its chip), and a question that arrives
+                wakes the screen. Only the lamp: the other screens still
+                follow the dim and off delays above, and never go fully
+                dark while a question waits. 0 = never: the lamp stays lit
+                until touched.
 
                 FR : une lampe (ouverte à la main ou toute seule) garde son
                 niveau, sans s'assombrir, jusqu'à ce que personne n'ait
                 touché le cadran depuis ce délai, puis s'éteint. Un toucher
                 sur la lampe éteinte ne fait que la réveiller, au niveau de
-                la lampe ; un second toucher rend la face. Une question en
-                attente la garde allumée, comme sur tous les autres écrans.
-                La lampe seulement : les autres écrans suivent toujours les
-                délais d'assombrissement et d'extinction ci-dessus. 0 =
-                jamais : la lampe reste allumée jusqu'au prochain toucher.
+                la lampe ; un second toucher rend la face. Elle s'éteint
+                même si une question attend : la question reste en file (la
+                face revient avec sa pastille), et une question qui arrive
+                réveille l'écran. La lampe seulement : les autres écrans
+                suivent toujours les délais d'assombrissement et
+                d'extinction ci-dessus, et ne deviennent jamais tout noirs
+                tant qu'une question attend. 0 = jamais : la lampe reste
+                allumée jusqu'au prochain toucher.
 
     endmenu
 

@@ -717,37 +717,94 @@ static void scenario(void)
     tap_at(120, 116);   // on the card
     CHECK(display_get_backlight() == settings_brightness(), "tap wakes the screen");
     CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
-
-    // The lamp's hour holds without the automatic lamp too (a lamp opened by
-    // hand), and a waiting question keeps it lit, as on every other screen.
     step(3200);   // the toast of the last tap
+#else
+#error "the scenario is timed for HARNESS_LAMP_AUTO_AFTER_S = 30 (default) or 0"
+#endif
+
+    // ── The lamp's hour while a question waits (both builds) ──
+    // The hour holds for a lamp opened by hand too, and even while a question
+    // waits: the lamp goes dark, the question stays queued, a tap wakes the
+    // lamp and a second one gives the dial back with its chip. A NEW question
+    // wakes the dark lamp by itself. The other screens keep their rule: a
+    // waiting question never lets them go fully dark (HARNESS_OFF_AFTER_S).
     hold_at(120, 116, 900);
     CHECK(screen_is("lamp"), "hold opens the lamp (%s)", ui_sim_screen());
+    CHECK(settings_lamp_level() < 100, "the 1 s fade window below needs a level < 100 (%d)", settings_lamp_level());
     daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q9\",\"questions\":[{\"key\":\"Tag ?\","
                 "\"q\":\"On tague la version ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
     step(400);
     CHECK(screen_is("question"), "a question takes the face (%s)", ui_sim_screen());
     swipe(40, 120, 200, 120);        // dismissed for later: back to the lamp it interrupted
-    CHECK(screen_is("lamp"), "dismissed: the lamp again, question still waiting (%s)", ui_sim_screen());
-    const int64_t touch_us = last_touch_us();
-    step_coarse(3601000 - ms_since(touch_us));
+    CHECK(screen_is("lamp") && cable_client_question_count() == 1,
+          "dismissed: the lamp again, question still waiting (%s, %d queued)", ui_sim_screen(),
+          cable_client_question_count());
+    int64_t q_touch_us = last_touch_us();
+    step_coarse(3599000 - ms_since(q_touch_us));
     CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(),
-          "question waiting + 1 h untouched: the lamp stays lit (%s, bl %d)", ui_sim_screen(),
+          "question waiting, 59 min 59 s: the lamp still lit (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    m = mark();
+    step(3601000 - ms_since(q_touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == 0,
+          "question waiting + 1 h 0 min 1 s untouched: the lamp is dark anyway (%s, bl %d)", ui_sim_screen(),
           display_get_backlight());
-    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q9\"}");
-    step(2000);
-    CHECK(screen_is("lamp") && display_get_backlight() == 0, "question gone after the hour: the lamp goes dark (%s, bl %d)",
-          ui_sim_screen(), display_get_backlight());
+    CHECK(cable_client_question_count() == 1 && !sent_since(m, "answer"),
+          "dark lamp: the question is still queued, nothing answered (%d queued)", cable_client_question_count());
+    // A tap on the dark lamp only wakes it, at its level…
+    m = mark();
     tap_at(120, 120);
-    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(), "tap: the lamp again (%s, bl %d)",
-          ui_sim_screen(), display_get_backlight());
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(),
+          "tap on the dark lamp: the lamp again, at its level (%s, bl %d vs %d)", ui_sim_screen(),
+          display_get_backlight(), settings_lamp_level());
+    CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
+    // …and the second gives the dial back, the question's chip on it.
     tap_at(120, 120);
     step(400);
-    CHECK(screen_is("home") && display_get_backlight() == settings_brightness(), "second tap: the dial (%s, bl %d)",
+    CHECK(screen_is("home") && on_screen("? Question") && display_get_backlight() == settings_brightness(),
+          "second tap: the dial with the question's chip (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    shot("home_question_after_dark_lamp");
+    // Not the lamp: on home a waiting question still only lets it dim. 11 min,
+    // so a fade to black from the 10 min off delay (1 step per 1 s pass)
+    // would have reached 0.
+    q_touch_us = last_touch_us();
+    step_coarse(660000 - ms_since(q_touch_us));
+    CHECK(screen_is("home") && on_screen("? Question") && display_get_backlight() > 0 &&
+          display_get_backlight() < settings_brightness(),
+          "question waiting, home + 11 min: dimmed, never dark (%s, bl %d)", ui_sim_screen(),
+          display_get_backlight());
+    tap_at(120, 30);                 // a dimmed screen: this touch only wakes it
+    CHECK(display_get_backlight() == settings_brightness(), "tap wakes the dial (bl %d)", display_get_backlight());
+    tap_text("? Question");
+    CHECK(screen_is("question") && on_screen("On tague"), "the chip brings the question back (%s)", ui_sim_screen());
+    swipe(40, 120, 200, 120);
+    CHECK(screen_is("home"), "dismissed again: home (%s)", ui_sim_screen());
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q9\"}");
+    step(400);
+    CHECK(screen_is("home") && !on_screen("? Question") && cable_client_question_count() == 0,
+          "closed elsewhere: no chip (%s)", ui_sim_screen());
+    // A new question on a dark lamp wakes the screen and takes the face.
+    hold_at(120, 116, 900);
+    CHECK(screen_is("lamp"), "hold opens the lamp (%s)", ui_sim_screen());
+    q_touch_us = last_touch_us();
+    step_coarse(3599000 - ms_since(q_touch_us));
+    step(3601000 - ms_since(q_touch_us));
+    CHECK(screen_is("lamp") && display_get_backlight() == 0, "1 h 0 min 1 s: the lamp is dark (%s, bl %d)",
           ui_sim_screen(), display_get_backlight());
-#else
-#error "the scenario is timed for HARNESS_LAMP_AUTO_AFTER_S = 30 (default) or 0"
-#endif
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a2\",\"id\":\"q10\",\"questions\":[{\"key\":\"Notes ?\","
+                "\"q\":\"On publie les notes ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
+    step(400);
+    CHECK(screen_is("question") && on_screen("On publie") && display_get_backlight() == settings_brightness(),
+          "a question wakes the dark lamp and takes the face (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    shot("question_wakes_dark_lamp");
+    swipe(40, 120, 200, 120);        // dismissed: back to the lamp, lit
+    CHECK(screen_is("lamp") && display_get_backlight() == settings_lamp_level(),
+          "dismissed: the lamp again, lit at its level (%s, bl %d)", ui_sim_screen(), display_get_backlight());
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home") && on_screen("? Question"), "tap: the dial with the chip (%s)", ui_sim_screen());
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a2\",\"id\":\"q10\"}");
+    step(400);
+    CHECK(screen_is("home") && !on_screen("? Question"), "closed elsewhere: no chip (%s)", ui_sim_screen());
 
     // The daemon goes quiet → session down after 15 s → "Not connected".
     s_daemon_alive = false;
