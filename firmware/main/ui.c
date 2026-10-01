@@ -789,6 +789,7 @@ static void close_lamp(void)
 {
     s_lamp_resume = false;
     settings_set_lamp(s_lamp_level, s_lamp_warmth);
+    lv_display_trigger_activity(NULL);   // the face is back: the idle count starts over
     go_home(LV_SCR_LOAD_ANIM_FADE_IN);
 }
 
@@ -849,6 +850,21 @@ static void lamp_long_pressed(lv_event_t *e)
 {
     (void)e;
     open_lamp();
+}
+
+// Left alone on a face at rest (home or offline), the dial becomes the lamp
+// (HARNESS_LAMP_AUTO_AFTER_S, 0 = never); a tap gives the face back through
+// close_lamp() → go_home(). A waiting question keeps the face, and a screen
+// that already went dark (forced off, or the off delay) stays dark.
+static void lamp_auto(void)
+{
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S > 0
+    if (s_screen != SCR_HOME && s_screen != SCR_OFFLINE) return;
+    if (s_q_pending > 0 || s_notif_questions > 0) return;
+    if (lv_display_get_inactive_time(NULL) < (uint32_t)CONFIG_HARNESS_LAMP_AUTO_AFTER_S * 1000u) return;
+    if (power_target() == 0) return;
+    open_lamp();
+#endif
 }
 
 static void build_lamp(void)
@@ -2137,6 +2153,7 @@ static void ui_step(void)
     btn_event_t btn;
     while (xQueueReceive(s_btn_queue, &btn, 0) == pdTRUE) handle_button(btn);
     lv_timer_handler();
+    lamp_auto();
     power_update();
     heartbeat();
     display_unlock();

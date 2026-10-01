@@ -61,17 +61,28 @@ gcc $CFLAGS $WARN $INC -DHARNESS_UI_SIM -DCABLE_HOST_TEST \
   "$FW/test/host/cjson/cJSON.c" \
   "$MAIN"/fonts/font_*.c \
   "$LIB" -lm -o "$BUILD/sim"
+# The same session with the automatic lamp off (HARNESS_LAMP_AUTO_AFTER_S=0):
+# proves dim / off still behave as they did before the lamp could come alone.
+gcc $CFLAGS $WARN $INC -DHARNESS_UI_SIM -DCABLE_HOST_TEST -DCONFIG_HARNESS_LAMP_AUTO_AFTER_S=0 \
+  "$SIM/sim_main.c" "$SIM/sim_platform.c" \
+  "$MAIN/ui.c" "$MAIN/cable_client.c" "$MAIN/cable_frame.c" \
+  "$FW/test/host/cjson/cJSON.c" \
+  "$MAIN"/fonts/font_*.c \
+  "$LIB" -lm -o "$BUILD/sim-lamp-auto-0"
 
 echo "== running the scripted session =="
-rm -f "$OUT"/*.ppm "$OUT"/*.png
+rm -rf "$OUT"/*.ppm "$OUT"/*.png "$OUT/lamp_auto_0"
+mkdir -p "$OUT/lamp_auto_0"
 "$BUILD/sim" "$OUT"
+echo "== running it again with the automatic lamp off =="
+"$BUILD/sim-lamp-auto-0" "$OUT/lamp_auto_0"
 
 # PPM → PNG, plus a contact sheet of every screen.
 python3 - "$OUT" <<'PY' || echo "(Pillow missing: screenshots left as .ppm)"
 import pathlib, sys
 from PIL import Image, ImageDraw
 out = pathlib.Path(sys.argv[1])
-shots = sorted(out.glob("*.ppm"))
+shots = sorted(out.rglob("*.ppm"))   # lamp_auto_0/ too; the sheet is the default build's
 for p in shots:
     Image.open(p).save(p.with_suffix(".png")); p.unlink()
 pngs = sorted(out.glob("[0-9]*.png"))

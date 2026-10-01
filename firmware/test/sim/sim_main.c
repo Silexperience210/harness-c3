@@ -159,6 +159,25 @@ static int dots_flag(void)
     return 0;
 }
 
+// The lamp is a COLOUR too: a warm glow (red high, over blue) filling the
+// middle of the dial, where every other face is the dark background with a
+// little text on it. Share of a central band that glows, 0–100: the band
+// stays above the lamp's hint line and below its status dot, and a share
+// (not one pixel) so the warm engine pill on the home card cannot pass.
+static int lamp_glow_pct(void)
+{
+    int warm = 0, n = 0;
+    for (int y = 90; y <= 150; y += 2) {
+        for (int x = 70; x <= 170; x += 2) {
+            const uint16_t c = sim_pixel(x, y);
+            const int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+            n++;
+            if (r >= 24 && g >= 24 && r > b) warm++;
+        }
+    }
+    return warm * 100 / n;
+}
+
 static void center_of(lv_obj_t *o, int *x, int *y)
 {
     lv_area_t a;
@@ -504,20 +523,146 @@ static void scenario(void)
     tap_at(120, 120);
     step(400);
 
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    // ── The lamp on its own (HARNESS_LAMP_AUTO_AFTER_S = 30) ──
+    // Left alone, the face becomes the lamp. Timed from LVGL's own idle clock
+    // (the last touch), not from a guess at how long the taps above took.
+    CHECK(settings_lamp_warmth() == 0, "the probe below needs a warm tone (%d)", settings_lamp_warmth());
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "home before the wait (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    step(29000 - lv_display_get_inactive_time(NULL));
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "29 s idle: still the dial (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    shot("idle_29s");
+    step(2000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "31 s idle: the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    CHECK(display_get_backlight() == settings_lamp_level(), "auto lamp at the lamp level (%d vs %d)",
+          display_get_backlight(), settings_lamp_level());
+    shot("lamp_auto");
+    // A touch gives the dial back — and only that: no agent.open behind it.
+    m = mark();
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "tap: the dial is back (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    CHECK(display_get_backlight() == settings_brightness(), "…at the UI brightness (%d)", display_get_backlight());
+    CHECK(!sent_since(m, "agent.open"), "the tap that ends the lamp does nothing else");
+    shot("lamp_auto_left");
+    // The idle count started over: it does not fall straight back into the lamp.
+    CHECK(lv_display_get_inactive_time(NULL) < 1000, "idle count restarted (%u ms)",
+          (unsigned)lv_display_get_inactive_time(NULL));
+    step(29000 - lv_display_get_inactive_time(NULL));
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "29 s after the tap: still the dial (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    step(2000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "31 s after the tap: the lamp again (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home"), "tap: home again (%s)", ui_sim_screen());
+
+    // A waiting question keeps the face: on the question screen…
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q8\",\"questions\":[{\"key\":\"Merge ?\","
+                "\"q\":\"On fusionne la branche ?\",\"options\":[\"Oui\",\"Non\"],\"multi\":false}]}");
+    step(400);
+    CHECK(screen_is("question") && on_screen("On fusionne"), "question shown (%s)", ui_sim_screen());
+    step(60000);
+    CHECK(screen_is("question") && on_screen("On fusionne") && lamp_glow_pct() < 10,
+          "question + 60 s idle: still the question, no lamp (%s, glow %d%%)", ui_sim_screen(), lamp_glow_pct());
+    shot("question_idle_60s");
+    // …and on home, behind the amber chip, once it was dismissed for later.
+    tap_at(120, 30);                 // the screen dimmed at 60 s: this touch only wakes it
+    swipe(40, 120, 200, 120);
+    CHECK(screen_is("home") && on_screen("? Question"), "dismissed: home with the chip (%s)", ui_sim_screen());
+    step(60000);
+    CHECK(screen_is("home") && on_screen("? Question") && lamp_glow_pct() < 10,
+          "pending question + 60 s idle on home: no lamp (%s, glow %d%%)", ui_sim_screen(), lamp_glow_pct());
+    shot("home_question_idle_60s");
+    // Closed elsewhere: nothing waits any more, the dial has rested 60 s → lamp.
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q8\"}");
+    step(1000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "question gone after a long rest: the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    tap_at(120, 120);
+    step(400);
+    // An unread question row (the window's list) keeps the face as well.
+    daemon_says("{\"t\":\"notif.replace\",\"items\":[{\"agentId\":\"a2\",\"name\":\"Firmware C3\",\"question\":true}]}");
+    step(31000);
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "unread question row + 31 s: no lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    daemon_says("{\"t\":\"notif.replace\",\"items\":[]}");
+    step(200);
+    CHECK(screen_is("lamp"), "row gone: the lamp (%s)", ui_sim_screen());
+    tap_at(120, 120);
+    step(400);
+
+    // Never from the settings or the scrollpad.
+    swipe(120, 40, 120, 200);
+    CHECK(screen_is("settings"), "settings (%s)", ui_sim_screen());
+    step(31000);
+    CHECK(screen_is("settings") && lamp_glow_pct() < 10, "settings + 31 s: no lamp (%s)", ui_sim_screen());
+    swipe(120, 200, 120, 40);
+    swipe(120, 200, 120, 60);
+    CHECK(screen_is("pad"), "scrollpad (%s)", ui_sim_screen());
+    step(31000);
+    CHECK(screen_is("pad") && lamp_glow_pct() < 10, "scrollpad + 31 s: no lamp (%s)", ui_sim_screen());
+    swipe(40, 120, 200, 120);
+    CHECK(screen_is("home"), "back home (%s)", ui_sim_screen());
+
+    // The hold still opens the lamp by hand, as before.
+    hold_at(120, 116, 900);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "hold still opens the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("home"), "tap leaves it (%s)", ui_sim_screen());
+#elif CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 0
+    // HARNESS_LAMP_AUTO_AFTER_S = 0: no lamp on its own, the screen power
+    // behaves as it always did — dim at 60 s, dark at 600 s.
     // Idle → dim → a tap only wakes (no action).
     step(61000);
     CHECK(display_get_backlight() < settings_brightness(), "dimmed after 60 s (%d)", display_get_backlight());
+    CHECK(screen_is("home") && lamp_glow_pct() < 10, "lamp auto off: still the dial at 61 s (%s)", ui_sim_screen());
     shot("dimmed");
+    step(540000);
+    CHECK(display_get_backlight() == 0 && screen_is("home"), "dark after 600 s (%d, %s)",
+          display_get_backlight(), ui_sim_screen());
     m = mark();
     tap_at(120, 116);   // on the card
     CHECK(display_get_backlight() == settings_brightness(), "tap wakes the screen");
     CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
+    step(61000);
+    CHECK(display_get_backlight() < settings_brightness(), "dimmed after 60 s (%d)", display_get_backlight());
+    m = mark();
+    tap_at(120, 116);   // on the card
+    CHECK(display_get_backlight() == settings_brightness(), "tap wakes the screen");
+    CHECK(!sent_since(m, "agent.open"), "the waking tap does nothing else");
+#else
+#error "the scenario is timed for HARNESS_LAMP_AUTO_AFTER_S = 30 (default) or 0"
+#endif
 
     // The daemon goes quiet → session down after 15 s → "Not connected".
     s_daemon_alive = false;
     step(16000);
     CHECK(on_screen("Non connecté"), "offline after 15 s of silence");
     shot("offline_again");
+#if CONFIG_HARNESS_LAMP_AUTO_AFTER_S == 30
+    // Offline, the lamp comes on its own too — and a tap gives back the
+    // offline face, not an empty dial.
+    step(29000 - lv_display_get_inactive_time(NULL));
+    CHECK(screen_is("offline") && lamp_glow_pct() < 10, "offline, 29 s idle: still offline (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    step(2000);
+    CHECK(screen_is("lamp") && lamp_glow_pct() > 90, "offline, 31 s idle: the lamp (%s, glow %d%%)",
+          ui_sim_screen(), lamp_glow_pct());
+    shot("lamp_auto_offline");
+    tap_at(120, 120);
+    step(400);
+    CHECK(screen_is("offline") && on_screen("Non connecté") && lamp_glow_pct() < 10,
+          "tap: the offline face is back (%s, glow %d%%)", ui_sim_screen(), lamp_glow_pct());
+    shot("lamp_auto_offline_left");
+#endif
     // A lamp needs no computer: hold on the offline screen.
     hold_at(120, 120, 900);
     CHECK(screen_is("lamp"), "offline: hold opens the lamp (%s)", ui_sim_screen());
@@ -543,9 +688,11 @@ int main(int argc, char **argv)
 
     lv_mem_monitor_t mon;
     lv_mem_monitor(&mon);
-    printf("sim: %d checks, %d failures, %d screenshots (LVGL pool: max %u of %u B = %u%%, %d-bit build)\n",
+    printf("sim: %d checks, %d failures, %d screenshots (LVGL pool: max %u of %u B = %u%%, %d-bit build, "
+           "lamp auto %d s)\n",
            s_checks, s_fail, s_shot, (unsigned)mon.max_used, (unsigned)LV_MEM_SIZE,
-           (unsigned)(100u * mon.max_used / LV_MEM_SIZE), (int)(8 * sizeof(void *)));
+           (unsigned)(100u * mon.max_used / LV_MEM_SIZE), (int)(8 * sizeof(void *)),
+           CONFIG_HARNESS_LAMP_AUTO_AFTER_S);
     // Keep a real margin on the device: a full pool is an LVGL assert.
     if (sizeof(void *) == 4 && mon.max_used > LV_MEM_SIZE * 85 / 100) {
         printf("FAIL: LVGL pool above 85%% on the device build\n");

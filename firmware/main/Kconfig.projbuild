@@ -207,6 +207,29 @@ menu "Harness C3 Configuration"
             default 600
             help
                 A question from an agent always wakes the screen.
+        config HARNESS_LAMP_AUTO_AFTER_S
+            int "Become a lamp after N seconds without interaction (0 = never)"
+            range 0 3600
+            default 30
+            help
+                EN: left alone on its face (home or "Not connected"), the
+                dial turns into the lamp, at the level and tone kept in NVS.
+                A tap brings the face back and the count starts again. Never
+                while a question waits, nor from the settings, scrollpad or
+                boot screens. A lamp does not dim, so with this below the dim
+                and off delays those only apply to the other screens; a
+                screen that already went dark stays dark. 0 = never: dim and
+                off behave exactly as before.
+
+                FR : laissé sur sa face (cadran ou « Non connecté »), le
+                cadran devient la lampe, au niveau et à la teinte gardés en
+                NVS. Un toucher rend la face et le compte repart de zéro.
+                Jamais tant qu'une question attend, ni depuis les réglages,
+                le pavé de défilement ou l'écran de démarrage. Une lampe ne
+                s'assombrit pas : réglé sous les délais d'assombrissement et
+                d'extinction, ceux-ci ne valent plus que pour les autres
+                écrans ; un écran déjà éteint reste éteint. 0 = jamais :
+                assombrissement et extinction comme avant.
 
     endmenu
 
