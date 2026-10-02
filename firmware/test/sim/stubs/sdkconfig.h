@@ -10,3 +10,5 @@
 #define CONFIG_HARNESS_LAMP_OFF_AFTER_S 3600
 #define CONFIG_HARNESS_BACKLIGHT_DEFAULT 80
 #define CONFIG_HARNESS_LANG_FR 1
+#define CONFIG_HARNESS_QUICK_REPLIES "Continue|Oui|Non|Résume où tu en es|Lance les tests"
+#define CONFIG_HARNESS_RELAUNCH_ENGINES "claude|hermes"

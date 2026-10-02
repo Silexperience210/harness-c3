@@ -204,6 +204,17 @@ void cable_client_send_stop(const char *agent_id)
     send_json(root);
 }
 
+void cable_client_send_turn(const char *agent_id, const char *text)
+{
+    // The daemon drops a turn.send unless both are non-empty — so do we.
+    if (!agent_id || !agent_id[0] || !text || !text[0]) return;
+    cJSON *root = msg("turn.send");
+    if (!root) return;
+    cJSON_AddStringToObject(root, "agentId", agent_id);
+    cJSON_AddStringToObject(root, "text", text);
+    send_json(root);
+}
+
 void cable_client_send_scroll(const char *phase, int dy, int v, bool with_v)
 {
     // The daemon drops a stroke whose phase is not one of the three — so do
@@ -274,6 +285,7 @@ static void set_agent_state(const char *agent_id, const char *state, const char 
     if (a) {
         copy_str(a->state, sizeof(a->state), state);
         if (text && text[0]) copy_str(a->summary, sizeof(a->summary), text);
+        if (strcmp(state, "running") == 0) a->starts++;   // only turn.started sets "running" here
     }
     CLIENT_UNLOCK();
     if (s_ui.agent_event) s_ui.agent_event(agent_id, state, text ? text : "", notify, beep, s_ui.ctx);
@@ -397,6 +409,7 @@ static void handle_agent(const cJSON *p)
         if (old) {
             copy_str(a->state, sizeof(a->state), old->state);
             copy_str(a->summary, sizeof(a->summary), old->summary);
+            a->starts = old->starts;
         } else {
             copy_str(a->state, sizeof(a->state), "idle");
         }
@@ -755,14 +768,15 @@ void cable_client_handle_frame(uint8_t version, uint8_t type,
         return;
     }
 
-    // cJSON needs a NUL-terminated string and the payload is not one. Copied
-    // rather than parsed in place: the decoder's buffer is reused on return.
-    if (payload_len == 0 || payload_len >= CABLE_JSON_MAX) { s_bad++; return; }
-    static char text[CABLE_JSON_MAX];   // only ever touched on the reader task
-    memcpy(text, payload, payload_len);
-    text[payload_len] = '\0';
-
-    cJSON *root = cJSON_Parse(text);
+    // Parsed where the decoder left it, bounded by the length rather than a
+    // NUL (the payload has none): the tree copies every string out, so the
+    // decoder may reuse its buffer on return. The frame layer already caps a
+    // payload at CABLE_MAX_PAYLOAD; there is no second, smaller cap here. A
+    // 2 KB copy buffer used to be one, and every message past it — a long
+    // `summary.text`, which the daemon sends uncapped — was dropped as "bad":
+    // no state move, no flag, no toast.
+    if (payload_len == 0) { s_bad++; return; }
+    cJSON *root = cJSON_ParseWithLength((const char *)payload, payload_len);
     if (!root) { s_bad++; return; }
     handle_message(root);
     cJSON_Delete(root);
@@ -859,6 +873,19 @@ int cable_client_notif_question_count(void)
     for (int i = 0; i < s_notif_count; i++) if (s_notifs[i].question) n++;
     CLIENT_UNLOCK();
     return n;
+}
+
+bool cable_client_agent_has_question(const char *agent_id)
+{
+    if (!agent_id || !agent_id[0]) return false;
+    bool any = false;
+    CLIENT_LOCK();
+    for (int i = 0; i < s_q_count && !any; i++) any = strcmp(s_questions[i].agent_id, agent_id) == 0;
+    for (int i = 0; i < s_notif_count && !any; i++) {
+        any = s_notifs[i].question && strcmp(s_notifs[i].agent_id, agent_id) == 0;
+    }
+    CLIENT_UNLOCK();
+    return any;
 }
 
 int cable_client_question_count(void)

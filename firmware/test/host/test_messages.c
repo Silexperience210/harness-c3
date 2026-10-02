@@ -33,7 +33,7 @@ uint32_t cable_platform_millis(void) { return s_now_ms; }
 
 typedef struct {
     uint8_t type;
-    char    text[CABLE_JSON_MAX];
+    char    text[2048];
     size_t  len;
 } sent_frame_t;
 
@@ -555,10 +555,10 @@ static void test_unknown_and_bad_never_fatal(void)
     feed("not json at all");
     feed("{\"noT\":\"here\"}");                             // no t discriminator
     cable_client_handle_frame(1, CABLE_TYPE_JSON, NULL, 0, NULL);              // empty payload
-    static char big[CABLE_JSON_MAX + 1];
-    memset(big, ' ', sizeof(big) - 1);
-    big[0] = '{'; big[sizeof(big) - 2] = '}'; big[sizeof(big) - 1] = '\0';
-    cable_client_handle_frame(1, CABLE_TYPE_JSON, (const uint8_t *)big, CABLE_JSON_MAX, NULL);
+    // Cut short: the length bounds the parse, so the half message is unreadable
+    // rather than read past its end.
+    const char *cut = "{\"t\":\"summary\",\"agentId\":\"a1\",\"text\":\"abc\"}";
+    cable_client_handle_frame(1, CABLE_TYPE_JSON, (const uint8_t *)cut, strlen(cut) - 3, NULL);
     cable_client_counters(&bad, &unknown);
     CHECK(bad == 4, "bad counter %u, want 4", bad);
 
@@ -632,6 +632,59 @@ static void test_stop_and_scroll_exact(void)
     const int before = count_json_sent();
     cable_client_send_scroll("fling", 1, 0, false);   // not a phase the daemon accepts
     CHECK(count_json_sent() == before, "invalid scroll phase was sent");
+}
+
+// PROTOCOL.md §4.8. The text travels verbatim (accents, quotes) and the
+// daemon drops the frame unless both fields are non-empty, so neither is sent.
+static void test_turn_send_exact(void)
+{
+    reset_all();
+    start_session();
+    s_sent_count = 0;
+    cable_client_send_turn("a1", "fix the login screen");
+    CHECK(last_json() && strcmp(last_json(), "{\"t\":\"turn.send\",\"agentId\":\"a1\",\"text\":\"fix the login screen\"}") == 0,
+          "turn.send: %s", last_json() ? last_json() : "(none)");
+    cable_client_send_turn("a1", "R\xC3\xA9sume \"vite\"");
+    CHECK(strcmp(last_json(), "{\"t\":\"turn.send\",\"agentId\":\"a1\",\"text\":\"R\xC3\xA9sume \\\"vite\\\"\"}") == 0,
+          "turn.send escaping: %s", last_json());
+    cable_client_send_turn("", "x");
+    cable_client_send_turn("a1", "");
+    cable_client_send_turn(NULL, "x");
+    cable_client_send_turn("a1", NULL);
+    CHECK(count_json_sent() == 2, "turn.send without agent or text was sent (%d frames)", count_json_sent());
+}
+
+// What the dial needs to tell "my text started a turn" from silence, and an
+// agent waiting on an answer from one that is free.
+static void test_turn_starts_and_agent_question(void)
+{
+    reset_all();
+    start_session();
+    feed_agent_list();
+    cable_agent_t agents[8];
+    cable_client_list_agents(agents, 8);
+    CHECK(agents[0].starts == 0, "starts %u at first", agents[0].starts);
+    feed("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"one\"}");
+    feed("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    cable_client_list_agents(agents, 8);
+    CHECK(agents[0].starts == 1 && strcmp(agents[0].state, "done") == 0,
+          "a turn that started and ended is still counted (%u, %s)", agents[0].starts, agents[0].state);
+    feed_agent_list();   // a refresh carries the count
+    cable_client_list_agents(agents, 8);
+    CHECK(agents[0].starts == 1, "starts after a list refresh %u", agents[0].starts);
+    CHECK(agents[1].starts == 0, "a2 starts %u", agents[1].starts);
+
+    CHECK(!cable_client_agent_has_question("a1") && !cable_client_agent_has_question("a2"), "no question yet");
+    feed(QUESTION_A2);
+    CHECK(cable_client_agent_has_question("a2") && !cable_client_agent_has_question("a1"),
+          "queued question belongs to a2 only");
+    feed("{\"t\":\"question.close\",\"agentId\":\"a2\",\"id\":\"q2\"}");
+    CHECK(!cable_client_agent_has_question("a2"), "closed question still counted");
+    feed("{\"t\":\"notif.replace\",\"items\":[{\"agentId\":\"a1\",\"question\":true},"
+         "{\"agentId\":\"a2\",\"question\":false}]}");
+    CHECK(cable_client_agent_has_question("a1") && !cable_client_agent_has_question("a2"),
+          "an unread question row counts, a finished-turn row does not");
+    CHECK(!cable_client_agent_has_question("") && !cable_client_agent_has_question(NULL), "empty id");
 }
 
 static void test_answer_resumes_agent_and_clears_question_row(void)
@@ -798,6 +851,98 @@ static void test_utf8_safe_truncation(void)
     CHECK(strlen(agents[0].name) == CABLE_NAME_MAX - 2, "name length %zu", strlen(agents[0].name));
 }
 
+// cJSON's allocator, counted: how much heap one inbound message costs while it
+// is parsed. Each block carries its size in front so free() can subtract it.
+static size_t s_heap_now, s_heap_peak;
+
+static void *counting_malloc(size_t n)
+{
+    size_t *p = malloc(n + sizeof(size_t));
+    if (!p) return NULL;
+    *p = n;
+    s_heap_now += n;
+    if (s_heap_now > s_heap_peak) s_heap_peak = s_heap_now;
+    return p + 1;
+}
+
+static void counting_free(void *ptr)
+{
+    if (!ptr) return;
+    size_t *p = (size_t *)ptr - 1;
+    s_heap_now -= *p;
+    free(p);
+}
+
+// A finished turn whose recap runs past 2 KB. The daemon sends `summary.text`
+// uncapped, and the client used to copy every message into a 2048-byte buffer
+// first: anything longer was dropped as "bad" — no state, no flag, no toast.
+// Now the message is parsed where the frame decoder left it, up to the frame
+// cap itself (CABLE_MAX_PAYLOAD), and only the stored line is cut — at a
+// character boundary.
+static void test_long_summary_is_not_lost(void)
+{
+    reset_all();
+    start_session();
+    feed_agent_list();
+
+    // The daemon's shape: a short recap, then the whole reply as `text`.
+    static char json[CABLE_MAX_PAYLOAD + 1];
+    int n = snprintf(json, sizeof(json),
+                     "{\"t\":\"summary\",\"agentId\":\"a1\",\"name\":\"Fix login screen\","
+                     "\"recap\":\"Login fixed\",\"text\":\"");
+    while (n < 6000) n += snprintf(json + n, sizeof(json) - (size_t)n, "Caf\xC3\xA9 ");
+    n += snprintf(json + n, sizeof(json) - (size_t)n, "\"}");
+    CHECK(n > 2048, "fixture is %d bytes, want > 2048", n);
+    uint32_t bad0, unk0;
+    cable_client_counters(&bad0, &unk0);
+    feed(json);
+    cable_agent_t agents[8];
+    cable_client_list_agents(agents, 8);
+    CHECK(strcmp(agents[0].state, "done") == 0, "%d-byte summary: state '%s', want done", n, agents[0].state);
+    CHECK(strcmp(agents[0].summary, "Login fixed") == 0, "%d-byte summary: line '%s'", n, agents[0].summary);
+    CHECK(s_ev_notify == 1 && s_ev_beep == 1, "%d-byte summary: notify/beep %d/%d (the flag and the toast)",
+          n, s_ev_notify, s_ev_beep);
+    uint32_t bad1, unk1;
+    cable_client_counters(&bad1, &unk1);
+    CHECK(bad1 == bad0, "a long message is not 'bad' (%u -> %u)", bad0, bad1);
+
+    // No recap: the long text IS the line, cut to the store at a character
+    // boundary ("é" straddles the cut).
+    n = snprintf(json, sizeof(json), "{\"t\":\"summary\",\"agentId\":\"a2\",\"text\":\"xx");
+    while (n < 5000) n += snprintf(json + n, sizeof(json) - (size_t)n, "\xC3\xA9");
+    n += snprintf(json + n, sizeof(json) - (size_t)n, "\"}");
+    feed(json);
+    cable_client_list_agents(agents, 8);
+    CHECK(strcmp(agents[1].state, "done") == 0, "no-recap %d-byte summary: state '%s'", n, agents[1].state);
+    CHECK(valid_utf8(agents[1].summary), "long line cut mid-character");
+    CHECK(strlen(agents[1].summary) == sizeof(agents[1].summary) - 2,
+          "long line kept %zu bytes (the cap less the half character)", strlen(agents[1].summary));
+    CHECK(s_ev_notify == 2, "no-recap summary notified (%d)", s_ev_notify);
+
+    // The largest payload a frame can carry still parses, and what it costs is
+    // the parse tree, freed on return — measured through cJSON's allocator.
+    n = snprintf(json, sizeof(json), "{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"max\",\"text\":\"");
+    while (n < CABLE_MAX_PAYLOAD - 2) json[n++] = 'z';
+    json[n++] = '"';
+    json[n++] = '}';
+    json[n] = '\0';
+    CHECK(n == CABLE_MAX_PAYLOAD, "max fixture %d bytes", n);
+    s_heap_now = s_heap_peak = 0;
+    cJSON_InitHooks(&(cJSON_Hooks){ .malloc_fn = counting_malloc, .free_fn = counting_free });
+    feed(json);
+    cJSON_InitHooks(NULL);
+    cable_client_list_agents(agents, 8);
+    CHECK(strcmp(agents[0].summary, "max") == 0, "%d-byte summary (frame cap): line '%s'", n, agents[0].summary);
+    CHECK(s_heap_now == 0, "parse tree leaked %zu B", s_heap_now);
+    CHECK(s_heap_peak < (size_t)n + 1024, "parse peak %zu B for a %d-byte message", s_heap_peak, n);
+    printf("  heap while parsing a %d-byte summary: peak %zu B (64-bit host)\n", n, s_heap_peak);
+    s_heap_now = s_heap_peak = 0;
+    cJSON_InitHooks(&(cJSON_Hooks){ .malloc_fn = counting_malloc, .free_fn = counting_free });
+    feed("{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"r\",\"text\":\"short\"}");
+    cJSON_InitHooks(NULL);
+    printf("  heap while parsing a short summary: peak %zu B\n", s_heap_peak);
+}
+
 // The same structs, seen from a translation unit that included <limits.h>
 // first (layout_tu.c), must have the same size as here. Regression test for
 // the NAME_MAX collision that shifted every field after `name` in ui.c.
@@ -822,6 +967,8 @@ int main(void)
     test_struct_layout_is_include_order_independent();
     test_hello_exact();
     test_stop_and_scroll_exact();
+    test_turn_send_exact();
+    test_turn_starts_and_agent_question();
     test_answer_resumes_agent_and_clears_question_row();
     test_question_queue();
     test_question_without_key_is_not_shown();
@@ -847,6 +994,7 @@ int main(void)
     test_unknown_and_bad_never_fatal();
     test_silence_drops_session();
     test_host_gone_drops_session();
+    test_long_summary_is_not_lost();
     printf("test_messages: %d checks, %d failures\n", s_checks, s_failures);
     return s_failures ? 1 : 0;
 }

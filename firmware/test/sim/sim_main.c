@@ -330,6 +330,145 @@ static void drag(int x0, int y0, int x1, int y1)
     step(200);
 }
 
+// ── Relancer: a ready-made reply as a new turn (turn.send) ──
+// a1 (claude) is on the card, mid-turn; a2 (codex) failed its last turn.
+static void relaunch(void)
+{
+    CHECK(on_screen("Réparer") && on_screen("Stop") && !on_screen("Relancer"),
+          "running: the chip is Stop, never Relancer");
+
+    // The turn ends with a recap well past 2 KB — the daemon sends the reply
+    // as `summary.text`, uncapped. It used to be dropped whole on the dial
+    // (no flag, no toast); now the turn shows as finished like any other.
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    static char big[6200];
+    int n = snprintf(big, sizeof(big), "{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"Écran de connexion réparé\","
+                                       "\"text\":\"");
+    while (n < 6000) n += snprintf(big + n, sizeof(big) - (size_t)n, "Le formulaire valide l'adresse. ");
+    snprintf(big + n, sizeof(big) - (size_t)n, "\"}");
+    CHECK(strlen(big) > 2048, "the recap fixture is %zu bytes", strlen(big));
+    daemon_says(big);
+    step(300);
+    CHECK(find_label_in(lv_layer_top(), "Écran de connexion", false) != NULL,   // the toast cuts with "…"
+          "a %zu-byte summary: its toast", strlen(big));
+    CHECK(find_label_in(lv_screen_active(), "Écran de connexion réparé", false) != NULL && on_screen("Terminé"),
+          "a %zu-byte summary: the card reads finished, with the recap", strlen(big));
+    shot("long_summary");
+    step(3400);   // the toast covers the flag: read it once the toast is gone
+    CHECK(pixel_flag_green(187, 177), "a %zu-byte summary: the green flag on the card", strlen(big));
+    CHECK(on_screen("Relancer") && !on_screen("Stop"), "done: the chip is Relancer");
+    shot("home_relancer");
+    // A turn starts (from the computer): Stop again, at once.
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Relecture…\"}");
+    step(200);
+    CHECK(on_screen("Stop") && !on_screen("Relancer"), "a turn starts: Stop again");
+    daemon_says("{\"t\":\"turn.error\",\"agentId\":\"a1\",\"message\":\"Interrompu\"}");
+    step(3400);
+    CHECK(on_screen("Erreur") && on_screen("Relancer"), "error: Relancer too");
+    daemon_says("{\"t\":\"summary\",\"agentId\":\"a1\",\"recap\":\"Écran de connexion réparé\",\"text\":\"…\","
+                "\"restore\":true}");
+    step(200);
+
+    // A question waiting for it — an unread row from the window, or one in
+    // the dial's queue — and there is no Relancer.
+    daemon_says("{\"t\":\"notif.replace\",\"items\":[{\"agentId\":\"a1\",\"name\":\"Réparer\",\"question\":true}]}");
+    step(200);
+    CHECK(!on_screen("Relancer"), "a question row for a1: no Relancer");
+    daemon_says("{\"t\":\"notif.replace\",\"items\":[]}");
+    step(200);
+    CHECK(on_screen("Relancer"), "row gone: Relancer back");
+    daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q5\",\"questions\":["
+                "{\"key\":\"k\",\"q\":\"On garde le cache ?\",\"options\":[\"Oui\",\"Non\"]}]}");
+    step(300);
+    swipe(40, 120, 200, 120);   // later
+    CHECK(screen_is("home") && on_screen("? Question") && !on_screen("Relancer"),
+          "a queued question: the chip is the question's (%s)", ui_sim_screen());
+    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q5\"}");
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    step(3400);
+    CHECK(on_screen("Relancer") && !on_screen("? Question"), "question closed, turn done: Relancer back");
+
+    // An engine whose delivery was not measured (codex): no chip, even idle.
+    swipe(190, 120, 50, 120);
+    CHECK(on_screen("Firmware C3") && on_screen("Erreur") && !on_screen("Relancer"),
+          "codex is not in HARNESS_RELAUNCH_ENGINES: no Relancer");
+    swipe(50, 120, 190, 120);
+    CHECK(on_screen("Réparer"), "back on a1");
+
+    // The screen: the agent, its last recap, the replies. Opening sends nothing.
+    int m = mark();
+    CHECK(tap_text("Relancer"), "tap Relancer");
+    CHECK(screen_is("reply") && on_screen("Réparer") && on_screen("Écran de connexion réparé") &&
+          on_screen("Continue") && on_screen("Oui"), "Relancer screen: name, recap, replies (%s)", ui_sim_screen());
+    CHECK(!sent_since(m, "turn.send"), "opening it sends nothing");
+    shot("reply");
+    // The computer turns the carousel meanwhile: the reply stays a1's.
+    daemon_says("{\"t\":\"focus\",\"agentId\":\"a2\"}");
+    step(300);
+    CHECK(screen_is("reply"), "a focus does not take the screen away (%s)", ui_sim_screen());
+    CHECK(tap_text("Oui"), "pick a reply");
+    CHECK(!sent_since(m, "turn.send"), "a pick alone sends nothing (two gestures)");
+    shot("reply_selected");
+    CHECK(tap_label(LV_SYMBOL_OK, true), "✓");
+    step(300);
+    const char *ts = sent_since(m, "turn.send");
+    CHECK(ts && strcmp(ts, "{\"t\":\"turn.send\",\"agentId\":\"a1\",\"text\":\"Oui\"}") == 0,
+          "turn.send exact, to the agent the screen was opened on: %s", ts ? ts : "(none)");
+    CHECK(count_since(m, "turn.send") == 1, "one turn.send (%d)", count_since(m, "turn.send"));
+    CHECK(screen_is("home") && on_screen("Envoyé à Réparer"), "sent: home and its toast (%s)", ui_sim_screen());
+    shot("reply_sent");
+    // The turn starts — and ends — inside the delay: no complaint after it.
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"OK\"}");
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    step(10500);
+    CHECK(!on_screen("Pas de réaction"), "a turn started: no 'no reaction' toast");
+
+    // Nothing comes back: after REPLY_ACK_MS (10 s), "Pas de réaction".
+    swipe(50, 120, 190, 120);   // the focus took the carousel to a2
+    CHECK(on_screen("Réparer") && on_screen("Relancer"), "a1 again, Relancer");
+    m = mark();
+    tap_text("Relancer");
+    tap_text("Continue");
+    tap_label(LV_SYMBOL_OK, true);
+    ts = sent_since(m, "turn.send");
+    CHECK(ts && strcmp(ts, "{\"t\":\"turn.send\",\"agentId\":\"a1\",\"text\":\"Continue\"}") == 0,
+          "second turn.send: %s", ts ? ts : "(none)");
+    step(9000);
+    CHECK(!on_screen("Pas de réaction"), "not before the delay");
+    step(1200);
+    CHECK(on_screen("Pas de réaction de Réparer"), "no turn.started within 10 s: 'no reaction' toast");
+    shot("reply_no_reaction");
+    step(3200);
+
+    // Never into a running turn: the agent starts one from the computer while
+    // the reply is being picked — ✓ sends nothing and says why.
+    m = mark();
+    tap_text("Relancer");
+    CHECK(screen_is("reply"), "Relancer screen again (%s)", ui_sim_screen());
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Lancé depuis l'ordinateur\"}");
+    step(200);
+    tap_text("Non");
+    tap_label(LV_SYMBOL_OK, true);
+    step(300);
+    CHECK(!sent_since(m, "turn.send"), "a turn started meanwhile: nothing sent");
+    CHECK(screen_is("home") && on_screen("occupé") && on_screen("Stop"), "busy toast, home with Stop (%s)",
+          ui_sim_screen());
+    shot("reply_refused_running");
+    step(3200);
+
+    // ✕ leaves without sending.
+    daemon_says("{\"t\":\"turn.done\",\"agentId\":\"a1\"}");
+    step(200);
+    m = mark();
+    tap_text("Relancer");
+    tap_text("Oui");
+    swipe(40, 120, 200, 120);   // later
+    CHECK(screen_is("home") && !sent_since(m, "turn.send"), "swiped away: nothing sent (%s)", ui_sim_screen());
+    // The scenario carries on with a1 mid-turn, as it found it.
+    daemon_says("{\"t\":\"turn.started\",\"agentId\":\"a1\",\"text\":\"Compilation du firmware…\"}");
+    step(200);
+}
+
 static void scenario(void)
 {
     // Boot → "Not connected".
@@ -461,15 +600,26 @@ static void scenario(void)
     step(3200);
     CHECK(!on_screen("? Question"), "no chip once nothing is pending");
 
-    // Free-text question: no options → only ✕, and a hint.
+    // Free-text question: no options, no keyboard — the ready-made replies
+    // (HARNESS_QUICK_REPLIES) stand in, and the one picked is a normal answer.
     daemon_says("{\"t\":\"question\",\"agentId\":\"a1\",\"id\":\"q3\",\"questions\":["
                 "{\"key\":\"why\",\"q\":\"Pourquoi ce choix ?\",\"options\":[]}]}");
     step(300);
-    CHECK(on_screen("répondez sur l'ordinateur"), "free-text hint");
+    CHECK(screen_is("question") && on_screen("Pourquoi ce choix") && on_screen("Continue") && on_screen("Oui"),
+          "free text: the ready-made replies are the options (%s)", ui_sim_screen());
+    CHECK(!on_screen("répondez sur l'ordinateur"), "free text: no more dead end");
     shot("question_free_text");
-    CHECK(tap_label(LV_SYMBOL_CLOSE, true), "✕ dismisses");
-    daemon_says("{\"t\":\"question.close\",\"agentId\":\"a1\",\"id\":\"q3\"}");
+    m = mark();
+    CHECK(tap_text("Non"), "pick a ready-made reply");
+    CHECK(tap_label(LV_SYMBOL_OK, true), "✓ answers");
     step(300);
+    answer = sent_since(m, "answer");
+    CHECK(answer && strcmp(answer, "{\"t\":\"answer\",\"agentId\":\"a1\",\"requestId\":\"q3\","
+                                   "\"answers\":{\"why\":\"Non\"}}") == 0,
+          "free-text answer exact: %s", answer ? answer : "(none)");
+    CHECK(!sent_since(m, "turn.send"), "a question's reply is an answer, never a new turn");
+    CHECK(on_screen("Réponse envoyée") && screen_is("home"), "answer toast, home (%s)", ui_sim_screen());
+    step(3200);
 
     // A finished turn announces itself (no buzzer on this board: the toast).
     daemon_says("{\"t\":\"summary\",\"agentId\":\"a2\",\"recap\":\"Build OK, 0 warning\",\"text\":\"…\"}");
@@ -506,6 +656,8 @@ static void scenario(void)
     CHECK(dots_flag() == 2, "a failed turn flags red on its page dot");
     shot("unseen_flag_error");
     step(3200);
+
+    relaunch();
 
     // Pull ↓ → settings; the brightness slider; push ↑ → home.
     swipe(120, 40, 120, 200);

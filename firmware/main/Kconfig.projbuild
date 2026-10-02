@@ -272,6 +272,43 @@ menu "Harness C3 Configuration"
             bool "English"
     endchoice
 
+    config HARNESS_QUICK_REPLIES
+        string "Ready-made replies (separated by |)"
+        default "Continue|Oui|Non|Résume où tu en es|Lance les tests"
+        help
+            EN: the replies the dial can send without a keyboard, at most 6,
+            79 bytes each, separated by "|". They appear on two screens:
+            "Follow up" on an agent that finished, failed or sits idle
+            (sent as a new turn, turn.send), and a question that expects a
+            free-text answer (sent as its answer). A reply starting with "/"
+            is a command to the engine (/compact…): it starts no turn, so
+            the dial does not wait for one. Empty: no Follow up chip, and
+            free-text questions are answered on the computer.
+
+            FR : les réponses que le cadran peut envoyer sans clavier, 6 au
+            plus, 79 octets chacune, séparées par « | ». Elles servent sur
+            deux écrans : « Relancer » sur un agent terminé, en erreur ou
+            inactif (envoyée comme un nouveau tour, turn.send), et une
+            question qui attend une réponse libre (envoyée comme sa
+            réponse). Une réponse qui commence par « / » est une commande
+            du moteur (/compact…) : elle ne lance pas de tour, le cadran
+            n'en attend donc pas. Vide : pas de pastille Relancer, et les
+            questions à réponse libre se traitent sur l'ordinateur.
+
+    config HARNESS_RELAUNCH_ENGINES
+        string "Engines that get the Follow up chip (separated by |, * = all)"
+        default "claude|hermes"
+        help
+            EN: the daemon types the text into the agent's terminal and
+            presses Enter. Measured end to end for Claude Code and Hermes
+            (text in, turn started, recap back); add an engine here once
+            you have seen it work, or "*" for all.
+
+            FR : le daemon tape le texte dans le terminal de l'agent et
+            appuie sur Entrée. Mesuré de bout en bout pour Claude Code et
+            Hermes (texte reçu, tour lancé, récap revenu) ; ajoutez un
+            moteur après l'avoir vu marcher, ou « * » pour tous.
+
     config HARNESS_MAX_AGENTS
         int "Max agents held in the store"
         default 8

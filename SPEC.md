@@ -17,12 +17,13 @@ Its complete normative description lives in `PROTOCOL.md` (extracted from upstre
 **In scope:** hello/welcome handshake, agent list (active tab, streamed + staged), fleet
 total, notifications (`notif.replace`, `notif.seen`), questions (`question` / queue of 3 /
 `question.close` / `answer`), turn lifecycle for UI status, `focus` + `agent.open`,
-`turn.stop`, touch scrollpad (`scroll`), log frames + 60 s heartbeat, graceful
+`turn.stop`, `turn.send` with ready-made replies (*Relancer*), touch scrollpad
+(`scroll`), log frames + 60 s heartbeat, graceful
 unknown-message handling, dual-slot OTA plumbing (partition table + real rollback),
 web flasher.
 
 **Out of scope:** voice (no mic), machine wheel, swarms picker, model/effort picker,
-free-text answers (no keyboard), accepting daemon-pushed firmware images (upstream images
+typed free-text answers (no keyboard: only the ready-made replies), accepting daemon-pushed firmware images (upstream images
 target ESP32-S3 — accepting them is a brick risk; see §9).
 
 ## 2. Hardware target
@@ -118,8 +119,8 @@ committed.
     `esp_app_get_description()->version` suffixed `-c3`, device id from MAC),
     `agents.list` after welcome, `answer` (echo `request_id` byte-for-byte, answers object
     built by UI verbatim), `focus`, `agent.open` (reason NULL or `"question"`),
-    `pong`; with touch: `turn.stop`, `scroll` (phase down/move/up, `dy` never elided,
-    `v` only on up).
+    `pong`; with touch: `turn.stop`, `turn.send` (agentId + text, both non-empty),
+    `scroll` (phase down/move/up, `dy` never elided, `v` only on up).
   - **Daemon→device (MUST):** `welcome` (every keepalive is answered — only a session
     TRANSITION moves the UI), `ping`, `agents.begin`/`agent`/`agents.end` (`.total`,
     `.tab`; built in a staging list, swapped in at `end`, keeping each known agent's
@@ -127,6 +128,12 @@ committed.
     dedup on id), `question.close`, `turn.started`/`turn.done`/`turn.error`, `summary`,
     `toast`, `focus`, `fw.offer` (see §9).
   - Unknown `t` or unreadable JSON → increment counters, never drop link, never reboot.
+  - A JSON payload is parsed where the frame decoder left it (`cJSON_ParseWithLength`),
+    up to the frame cap `CABLE_MAX_PAYLOAD` (8192) — no smaller copy buffer: the daemon
+    sends `summary.text` uncapped, and a 2 KB copy dropped every longer recap as
+    "bad" (no state, no flag, no toast). Only stored fields are cut, on a UTF-8
+    boundary. Cost: the parse tree, on the heap for the duration of one message
+    (≈ payload size; 8.5 KB peak measured for 8192 bytes).
   - Lenient parsing everywhere: missing fields fall back to safe defaults.
 - Agent store: array of `HARNESS_MAX_AGENTS` (8), fields per PROTOCOL.md (id, name,
   engine, state, summary, machine) with the protocol caps (`CABLE_NAME_MAX` 40 — not
@@ -155,15 +162,26 @@ Screens (adapted from upstream UI_FLOWS.md to 240×240 + touch):
    amber waiting / green done / red error; blinks amber while a question waits), machine
    name, state line (animated "…" while running), fleet badge, agent name (1–2 lines),
    engine · machine, status line, ‹ › chevrons and page dots when there are several
-   agents, and one action chip: **? Question** (a question waits) or **Stop** (running
-   turn; first tap arms, second tap sends `turn.stop`). Swipe ←/→ = next/previous
+   agents, and one action chip: **? Question** (a question waits), **Stop** (running
+   turn; first tap arms, second tap sends `turn.stop`) or **Relancer** (done / error /
+   idle, no question for that agent, engine in `HARNESS_RELAUNCH_ENGINES`: opens the
+   Relancer screen). Swipe ←/→ = next/previous
    (`focus`), tap the card = `agent.open` (no reason), pull ↓ = settings, push ↑ =
    scrollpad. A swipe's release is never a tap.
 4. **Question**: one scrolling column (header "agent · n/m · +k", prompt, one finger-sized
    button per option, ✕ / ✓ row that scrolls into view once something is chosen).
    Multi-select toggles + ✓ joins labels with ", ". Items of one request are walked in
    order (→ then ✓). ✕ / sideways swipe = dismiss without a message; `question.close` or
-   an answer re-reads the queue and shows the next one.
+   an answer re-reads the queue and shows the next one. A free-text item (no options)
+   offers the ready-made replies (`HARNESS_QUICK_REPLIES`) as its options; the one
+   picked is that item's answer.
+   **Relancer** is the same screen: the agent's name, its last recap, the ready-made
+   replies; pick one, ✓ sends `turn.send` to the agent the screen was OPENED on (its id
+   is copied then: a `focus` from the computer may turn the carousel meanwhile). The
+   agent is checked again at ✓ — running, waiting or asked meanwhile → nothing sent,
+   toast. Sent → toast; no `turn.started` for it within 10 s (measured: Claude Code
+   0.3–0.9 s, Hermes 3.0–4.5 s) → "Pas de réaction" toast. A reply starting with "/"
+   is a command to the engine and starts no turn, so nothing is awaited.
 5. **Settings**: brightness slider (live preview, saved to NVS on release), fw, touch
    chip, free RAM, link error counters.
 6. **Scrollpad**: `scroll` down / move (≤ 33 Hz) / up with velocity; sideways swipe or ✕

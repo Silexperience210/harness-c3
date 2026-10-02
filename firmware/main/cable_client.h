@@ -70,10 +70,6 @@
 #define CABLE_HELLO_SESSION_MS 15000  // session up: keepalive + re-introduction
 #define CABLE_SILENCE_MS       15000  // nothing of ANY kind → session down
 
-// One inbound JSON message. A `question` with several options is the largest
-// thing the vocabulary legitimately sends.
-#define CABLE_JSON_MAX 2048
-
 // Question screen limits (PROTOCOL.md §5.19, §11).
 #define CABLE_Q_MAX        4    // questions per screen
 #define CABLE_OPT_MAX      6    // options per question
@@ -98,6 +94,10 @@ typedef struct {
     char summary[100];       // last status line (turn.started) or recap (summary)
     char machine_id[ID_MAX]; // which machine this agent lives on ("" if unsaid)
     char machine[CABLE_NAME_MAX];  // that machine's display name
+    // turn.started messages seen for this agent. A count, not the state: a
+    // turn can start AND end between two looks of the UI, and whoever sent the
+    // text still needs to know that it did.
+    uint32_t starts;
 } cable_agent_t;
 
 // One row of the window's unread list, as `notif.replace` carries it.
@@ -226,6 +226,10 @@ void cable_client_question_head_id(char *out, size_t cap);
 // How many rows of the unread list are questions (the ring's amber pulse).
 int  cable_client_notif_question_count(void);
 
+// Whether `agent_id` is waiting on an answer: a queued question, or a
+// question row in the window's unread list.
+bool cable_client_agent_has_question(const char *agent_id);
+
 // Copy the current unread list; returns how many rows were written.
 int  cable_client_list_notifs(cable_notif_t *out, int max);
 
@@ -259,6 +263,13 @@ void cable_client_answer(const char *agent_id, const char *request_id,
 
 // Interrupt that agent's running turn, and only that one (PROTOCOL.md §4.9).
 void cable_client_send_stop(const char *agent_id);
+
+// Deliver `text` into that agent as a new turn (PROTOCOL.md §4.8). Fire and
+// forget: the outcome arrives as turn.started / summary / turn.error. The
+// daemon pastes it into the agent's pane and presses Enter, so whatever was
+// half typed there goes with it, and a leading "/" is a command to the engine.
+// Nothing is sent without both an agent and a text.
+void cable_client_send_turn(const char *agent_id, const char *text);
 
 // Touch scrollpad (PROTOCOL.md §4.13): the dial reports finger MOVEMENT for
 // the computer's window. `phase` is "down" | "move" | "up"; `dy` is device

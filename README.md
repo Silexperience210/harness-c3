@@ -26,8 +26,18 @@ their questions with a tap, stop a runaway turn, and scroll the window.
   for multi-select), then ✓. Dismiss with ✕ or a sideways swipe — the
   question stays pending and an amber chip on the home screen brings it
   back. Up to three questions queue; several items per request are walked
-  one by one.
+  one by one. A **free-text** question (no options) offers the ready-made
+  replies below instead; the one you pick is sent as its answer.
 - **Stop** a running turn (tap *Stop*, then *Confirm?*) — `turn.stop`.
+- **Follow up** (*Relancer*) an agent that finished, failed or sits idle,
+  with nothing waiting on it: the chip where *Stop* sits opens the agent's
+  last recap and 4–5 ready-made replies; pick one, then ✓ — `turn.send`, a
+  new turn. A toast confirms it; if no turn starts within 10 s, a second one
+  says *No reaction*. Never during a turn (the chip is *Stop* then), and only
+  for engines whose delivery was checked end to end (Claude Code, Hermes —
+  `HARNESS_RELAUNCH_ENGINES`). The daemon types the text into the agent's
+  terminal and presses Enter: anything half typed there goes along with it,
+  and a reply starting with `/` is a command to the engine.
 - **Scrollpad** — the dial becomes a touchpad that scrolls the computer's
   window (`scroll` with fling velocity).
 - **Finished turns** and **errors** pop up as toasts (the board has no
@@ -152,7 +162,11 @@ colour order, touch transforms, default brightness, dim / off delays, the
 automatic lamp delay (`HARNESS_LAMP_AUTO_AFTER_S`, 30 s, 0 = never: dim and
 off then work exactly as before), the lamp's own off delay
 (`HARNESS_LAMP_OFF_AFTER_S`, 3600 s, 0 = never; the lamp ignores the dim /
-off delays), UI language (Français / English), max agents held.
+off delays), the ready-made replies (`HARNESS_QUICK_REPLIES`, up to 6
+separated by `|`, French defaults "Continue|Oui|Non|Résume où tu en es|Lance
+les tests"; empty = no *Follow up* chip) and the engines that get the chip
+(`HARNESS_RELAUNCH_ENGINES`, "claude|hermes", `*` = all), UI language
+(Français / English), max agents held.
 
 ## Development
 
@@ -177,7 +191,13 @@ off delays), UI language (Français / English), max agents held.
 
 - No voice (no mic), no machine wheel / swarms / model picker — the
   carousel covers the window's active tab.
-- Free-text questions (no options) must be answered on the computer.
+- Free-text questions (no options) can only get one of the ready-made
+  replies; anything else is typed on the computer.
+- *Follow up* is fire and forget: the dial knows a turn started, not that
+  the agent read your text the way you meant it. Text half typed in the
+  agent's terminal is sent along with the reply (measured on Claude Code and
+  Hermes). Codex was not available to test: add it to
+  `HARNESS_RELAUNCH_ENGINES` once you have seen it work.
 - **`fw.offer` is never answered** (anti-brick, SPEC §9): upstream images
   target ESP32-S3. Dual-OTA partitions and rollback are in place for a
   future C3-aware updater; until then, use the web flasher or esptool.
@@ -217,7 +237,20 @@ faire défiler la fenêtre.
   en choix multiple) puis ✓. ✕ ou un swipe latéral = « plus tard » : la
   question reste en attente et une pastille ambre sur l'accueil la rouvre.
   Jusqu'à 3 questions en file.
+  Une question à **réponse libre** (sans options) propose à la place les
+  réponses toutes faites ci-dessous ; celle choisie part comme sa réponse.
 - **Stop** d'un tour en cours (touchez *Stop* puis *Confirmer ?*).
+- **Relancer** un agent terminé, en erreur ou inactif, quand rien ne
+  l'attend : la pastille, là où apparaît *Stop*, ouvre son dernier récap et
+  4 à 5 réponses toutes faites ; choisissez-en une puis ✓ — `turn.send`, un
+  nouveau tour. Un toast confirme l'envoi ; si aucun tour ne démarre dans les
+  10 s, un second dit *Pas de réaction*. Jamais pendant un tour (la pastille
+  est alors *Stop*), et seulement pour les moteurs dont la livraison a été
+  vérifiée de bout en bout (Claude Code, Hermes — `HARNESS_RELAUNCH_ENGINES`).
+  Le daemon tape le texte dans le terminal de l'agent et appuie sur Entrée :
+  ce qui y était à moitié tapé part avec, et une réponse qui commence par `/`
+  est une commande du moteur. Réponses réglables dans menuconfig
+  (`HARNESS_QUICK_REPLIES`, 6 au plus, séparées par `|`).
 - **Pavé de défilement** (poussez vers le haut) : l'écran devient un
   touchpad qui fait défiler la fenêtre de l'ordinateur.
 - Tours terminés et erreurs en notifications (pas de buzzer sur la carte), et
@@ -322,8 +355,13 @@ avec les unités systemd et un lanceur d'agent `hermes-dial`.
 
 ## Limites
 
-Pas de voix, pas de molette machines / swarms / modèles ; les questions à
-réponse libre se traitent sur l'ordinateur ; les mises à jour firmware
+Pas de voix, pas de molette machines / swarms / modèles ; une question à
+réponse libre ne peut recevoir qu'une des réponses toutes faites (autre chose
+se tape sur l'ordinateur) ; *Relancer* envoie sans accusé de lecture — le
+cadran sait qu'un tour a démarré, pas que l'agent a compris — et un texte à
+moitié tapé dans le terminal de l'agent part avec la réponse (mesuré sur
+Claude Code et Hermes ; Codex non testé, à ajouter à
+`HARNESS_RELAUNCH_ENGINES` une fois vérifié) ; les mises à jour firmware
 proposées par le daemon (images ESP32-S3) sont **toujours ignorées** (risque
 de brick — SPEC §9) : mise à jour via le web flasher ou esptool.
 

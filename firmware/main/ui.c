@@ -12,7 +12,10 @@
 // `focus`), tap the card = `agent.open`, pull ↓ = settings, push ↑ =
 // scrollpad. Question screen: tap options, ✓ sends, ✕ or a sideways swipe
 // dismisses (the question stays pending: the amber chip on home brings it
-// back). A tap on a dark or dimmed screen only wakes it.
+// back). The chip under the card is "? Question" while one waits, "Stop" on a
+// running agent, "Relancer" on one that finished, failed or sits idle (pick a
+// ready-made reply, ✓ sends it as a new turn). A tap on a dark or dimmed
+// screen only wakes it.
 //
 // Buttons (optional; the ESP32-2424S012C has only BOOT = button B):
 //   A short = next agent / next option      A long = open agent / confirm
@@ -79,6 +82,11 @@ static const char *TAG = "ui";
 #define BOOT_SCREEN_MS   1200
 #define TOAST_MS         3000
 #define STOP_CONFIRM_MS  3000
+// After a ready-made reply goes out, how long a turn may take to start before
+// the dial says nothing happened. Measured through the daemon: Claude Code
+// starts in 0.3–0.9 s, Hermes in 3.0–4.5 s (the daemon presses Enter again at
+// 2.5 s before Hermes takes it), so 5 s would cry wolf.
+#define REPLY_ACK_MS     10000
 #define PULSE_PERIOD_MS  600     // ring blink while a question waits: 2 redraws / 1.2 s
 #define BUSY_PERIOD_MS   1000    // turn timer "1:23": a one-line redraw
 #define SCROLL_SEND_MS   30      // scrollpad: at most ~33 moves / s on the wire
@@ -118,7 +126,8 @@ static QueueHandle_t s_ev_queue;
 
 // ── UI state (UI task only) ─────────────────────────────────────────────────
 
-typedef enum { SCR_BOOT, SCR_OFFLINE, SCR_HOME, SCR_QUESTION, SCR_SETTINGS, SCR_PAD, SCR_LAMP } screen_t;
+// SCR_REPLY is the question screen holding ready-made replies for a new turn.
+typedef enum { SCR_BOOT, SCR_OFFLINE, SCR_HOME, SCR_QUESTION, SCR_SETTINGS, SCR_PAD, SCR_LAMP, SCR_REPLY } screen_t;
 
 static screen_t s_screen = SCR_BOOT;
 static bool     s_has_touch;
@@ -143,6 +152,16 @@ static int              s_q_single;                 // chosen option, -1 = none
 static bool             s_q_multi[CABLE_OPT_MAX];
 static int              s_q_cursor;                 // button navigation
 static cJSON           *s_answers;
+static bool             s_q_reply;                  // s_q is a Relancer screen, not a question
+
+// Ready-made replies (HARNESS_QUICK_REPLIES), split once at boot. They are the
+// options of the Relancer screen and of a free-text question.
+static char s_replies[CABLE_OPT_MAX][CABLE_OPT_TEXT_MAX];
+static int  s_reply_count;
+
+// A reply that went out as a new turn, waiting for that turn to start.
+static struct { char id[ID_MAX]; char name[CABLE_NAME_MAX]; uint32_t starts; } s_reply_watch;
+static lv_timer_t *s_reply_timer;
 
 static bool    s_forced_off;       // BOOT long press
 static atomic_bool s_activity;     // the daemon pushed something worth seeing (cable callbacks + session transitions set it, ui_step() clears it)
@@ -717,6 +736,7 @@ static void question_restyle(void);
 static void open_settings(void);
 static void open_pad(void);
 static void go_home(lv_screen_load_anim_t anim);
+static void reply_open(void);
 
 // ── lamp mode: the dial as a light ─────────────────────────────────────────
 // The screen becomes a bulb: a radial glow in one of five tones, the
@@ -917,6 +937,102 @@ static void build_lamp(void)
     lamp_style();
 }
 
+// ── ready-made replies ──────────────────────────────────────────────────────
+
+// HARNESS_QUICK_REPLIES, "a|b|c": blanks around each reply dropped, empty
+// ones skipped, each cut at a character boundary to fit an option.
+static void replies_load(void)
+{
+    const char *p = CONFIG_HARNESS_QUICK_REPLIES;
+    s_reply_count = 0;
+    while (*p && s_reply_count < CABLE_OPT_MAX) {
+        const char *end = strchr(p, '|');
+        if (!end) end = p + strlen(p);
+        const char *a = p, *b = end;
+        while (a < b && *a == ' ') a++;
+        while (b > a && b[-1] == ' ') b--;
+        if (b > a) {
+            char one[2 * CABLE_OPT_TEXT_MAX];
+            const size_t n = (size_t)(b - a) < sizeof(one) ? (size_t)(b - a) : sizeof(one) - 1;
+            memcpy(one, a, n);
+            one[n] = '\0';
+            cable_utf8_copy(s_replies[s_reply_count], sizeof(s_replies[0]), one);
+            s_reply_count++;
+        }
+        p = *end ? end + 1 : end;
+    }
+}
+
+static void replies_fill(cable_question_item_t *it)
+{
+    it->opt_count = s_reply_count;
+    it->multi = false;
+    for (int i = 0; i < s_reply_count; i++) {
+        memcpy(it->options[i], s_replies[i], sizeof(it->options[i]));
+    }
+}
+
+// HARNESS_RELAUNCH_ENGINES: whole engine names separated by "|", "*" = all.
+static bool relaunch_engine_ok(const char *engine)
+{
+    const char *p = CONFIG_HARNESS_RELAUNCH_ENGINES;
+    const size_t n = strlen(engine);
+    while (*p) {
+        const char *end = strchr(p, '|');
+        const size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == 1 && *p == '*') return true;
+        if (n && len == n && strncmp(p, engine, n) == 0) return true;
+        if (!end) break;
+        p = end + 1;
+    }
+    return false;
+}
+
+// A turn can be started only on an agent that is NOT in one: never text into
+// a running turn (that is what Stop is for), never past a question it waits on.
+static bool relaunch_state_ok(const cable_agent_t *a)
+{
+    return (strcmp(a->state, "done") == 0 || strcmp(a->state, "error") == 0 ||
+            strcmp(a->state, "idle") == 0) &&
+           !cable_client_agent_has_question(a->id);
+}
+
+static bool relaunch_allowed(const cable_agent_t *a)
+{
+    return s_has_touch && s_reply_count > 0 && relaunch_engine_ok(a->engine) && relaunch_state_ok(a);
+}
+
+static const cable_agent_t *agent_by_id(const char *id)
+{
+    for (int i = 0; i < s_agent_count; i++) {
+        if (strcmp(s_agents[i].id, id) == 0) return &s_agents[i];
+    }
+    return NULL;
+}
+
+// REPLY_ACK_MS after a reply went out: has a turn started for that agent?
+static void reply_watch_fire(lv_timer_t *t)
+{
+    (void)t;
+    s_reply_timer = NULL;   // one-shot: LVGL deletes it after this call
+    if (!s_connected) return;
+    const cable_agent_t *a = agent_by_id(s_reply_watch.id);
+    if (a && a->starts > s_reply_watch.starts) return;   // it did
+    char msg[CABLE_NAME_MAX + 48];
+    snprintf(msg, sizeof(msg), TR("Pas de réaction de %s", "No reaction from %s"), s_reply_watch.name);
+    toast_show(msg, COL_WAITING);
+}
+
+static void reply_watch_arm(const cable_agent_t *a, const char *name)
+{
+    cable_utf8_copy(s_reply_watch.id, sizeof(s_reply_watch.id), a->id);
+    cable_utf8_copy(s_reply_watch.name, sizeof(s_reply_watch.name), name);
+    s_reply_watch.starts = a->starts;
+    if (s_reply_timer) lv_timer_delete(s_reply_timer);
+    s_reply_timer = lv_timer_create(reply_watch_fire, REPLY_ACK_MS, NULL);
+    lv_timer_set_repeat_count(s_reply_timer, 1);
+}
+
 // ── home screen ─────────────────────────────────────────────────────────────
 
 static void home_select(int index, bool send_focus)
@@ -978,7 +1094,11 @@ static void action_clicked(lv_event_t *e)
         question_open();
         return;
     }
-    if (s_agent_count == 0 || strcmp(s_agents[s_index].state, "running") != 0) return;
+    if (s_agent_count == 0) return;
+    if (strcmp(s_agents[s_index].state, "running") != 0) {
+        if (relaunch_allowed(&s_agents[s_index])) reply_open();
+        return;
+    }
     if (!s_stop_armed) {              // first tap arms, second tap stops: no accidents
         s_stop_armed = true;
         if (s_stop_timer) lv_timer_delete(s_stop_timer);
@@ -1141,7 +1261,8 @@ static void build_home(void)
         lv_obj_set_style_bg_color(d, lv_color_hex(COL_LINE), 0);
     }
 
-    // Action chip: "? Question" (a question waits) or "■ Stop" (turn running).
+    // Action chip: "? Question" (a question waits), "■ Stop" (turn running) or
+    // "Relancer" (finished, failed or idle: a ready-made reply as a new turn).
     s_action = new_button(s_scr_home, "", 96, 32, COL_SURFACE2, COL_TEXT, action_clicked, NULL);
     lv_obj_align(s_action, LV_ALIGN_TOP_MID, 0, 186);
     s_action_label = lv_obj_get_child(s_action, 0);
@@ -1253,6 +1374,11 @@ static void render_home(void)
         lv_label_set_text(s_action_label, s_stop_armed ? TR("Confirmer ?", "Confirm?")
                                                        : LV_SYMBOL_STOP "  Stop");
         set_hidden(s_action, false);
+    } else if (s_agent_count > 0 && relaunch_allowed(&s_agents[s_index])) {
+        lv_obj_set_style_bg_color(s_action, lv_color_hex(COL_SURFACE2), 0);
+        lv_obj_set_style_text_color(s_action_label, lv_color_hex(COL_ACCENT), 0);
+        lv_label_set_text(s_action_label, TR(LV_SYMBOL_REFRESH "  Relancer", LV_SYMBOL_REFRESH "  Follow up"));
+        set_hidden(s_action, false);
     } else {
         set_hidden(s_action, true);
     }
@@ -1313,8 +1439,17 @@ static void question_open(void)
         return;
     }
     s_q_valid = true;
+    s_q_reply = false;
     s_q_index = 0;
     q_reset_item();
+    // A free-text item has no options and this dial no keyboard: the
+    // ready-made replies stand in, and the one picked is that item's answer,
+    // sent like any other (the daemon takes any string, as from a voice reply).
+    if (s_reply_count > 0) {
+        for (int k = 0; k < s_q.count; k++) {
+            if (s_q.items[k].opt_count == 0) replies_fill(&s_q.items[k]);
+        }
+    }
     if (s_answers) cJSON_Delete(s_answers);
     s_answers = cJSON_CreateObject();
     question_render();
@@ -1322,11 +1457,56 @@ static void question_open(void)
     load(s_scr_question, SCR_QUESTION, LV_SCR_LOAD_ANIM_FADE_IN);
 }
 
+// Relancer: the question screen, holding the agent's last recap and the
+// ready-made replies. Pick one, ✓ sends it as a new turn.
+static void reply_open(void)
+{
+    const cable_agent_t *a = &s_agents[s_index];
+    memset(&s_q, 0, sizeof(s_q));
+    // The agent is COPIED here: the computer can turn the carousel (`focus`)
+    // while this screen is up, and the reply still goes to the agent it was
+    // opened on.
+    cable_utf8_copy(s_q.agent_id, sizeof(s_q.agent_id), a->id);
+    cable_utf8_copy(s_q.name, sizeof(s_q.name), a->name);
+    s_q.count = 1;
+    cable_utf8_copy(s_q.items[0].q, sizeof(s_q.items[0].q),
+                    a->summary[0] ? a->summary : TR("Pas encore de récap.", "No recap yet."));
+    replies_fill(&s_q.items[0]);
+    s_q_valid = true;
+    s_q_reply = true;
+    s_q_index = 0;
+    q_reset_item();
+    question_render();
+    lv_obj_scroll_to_y(s_q_col, 0, LV_ANIM_OFF);
+    load(s_scr_question, SCR_REPLY, LV_SCR_LOAD_ANIM_FADE_IN);
+}
+
 static void question_leave(void)
 {
     if (s_answers) { cJSON_Delete(s_answers); s_answers = NULL; }
     s_q_valid = false;
+    s_q_reply = false;
     go_home(LV_SCR_LOAD_ANIM_NONE);
+}
+
+// ✓ on the Relancer screen. The agent is checked AGAIN: it may have started a
+// turn from the computer, or stopped to ask, while the reply was being picked.
+static void reply_send(const char *text)
+{
+    const cable_agent_t *a = agent_by_id(s_q.agent_id);
+    char msg[CABLE_NAME_MAX + 48];
+    if (!a || !relaunch_state_ok(a)) {
+        snprintf(msg, sizeof(msg), TR("%s est occupé : rien envoyé", "%s is busy: nothing sent"), s_q.name);
+        toast_show(msg, COL_WAITING);
+        question_leave();
+        return;
+    }
+    cable_client_send_turn(s_q.agent_id, text);
+    snprintf(msg, sizeof(msg), TR(LV_SYMBOL_UPLOAD "  Envoyé à %s", LV_SYMBOL_UPLOAD "  Sent to %s"), s_q.name);
+    toast_show(msg, COL_ACCENT);
+    // A "/command" is the engine's business and starts no turn: nothing to wait for.
+    if (text[0] != '/') reply_watch_arm(a, s_q.name);
+    question_leave();
 }
 
 // ✕ / swipe / BOOT: no message (SPEC.md §6). The question stays pending on
@@ -1351,7 +1531,12 @@ static void question_finish(void)
 static void question_submit(void)
 {
     const cable_question_item_t *it = q_item();
-    if (!it || !s_answers || !q_has_choice()) return;
+    if (!it || !q_has_choice()) return;
+    if (s_q_reply) {
+        reply_send(it->options[s_q_single]);
+        return;
+    }
+    if (!s_answers) return;
     if (it->multi) {
         // Labels joined with ", " (PROTOCOL.md §4.14), in option order.
         char joined[CABLE_OPT_MAX * (CABLE_OPT_TEXT_MAX + 2)];
@@ -1512,6 +1697,8 @@ static void question_render(void)
     if (!it) return;
 
     const char *who = s_q.name[0] ? s_q.name : "Agent";
+    // Amber is a question waiting; the Relancer screen is the person's own move.
+    lv_obj_set_style_text_color(s_q_header, lv_color_hex(s_q_reply ? COL_ACCENT : COL_WAITING), 0);
     const int others = s_q_pending > 1 ? s_q_pending - 1 : 0;
     if (s_q.count > 1 && others) {
         lv_label_set_text_fmt(s_q_header, "%s · %d/%d · +%d", who, s_q_index + 1, s_q.count, others);
@@ -1548,7 +1735,8 @@ static void question_render(void)
     }
 
     if (it->opt_count == 0) {
-        // Free-text question: this dial has no keyboard and no microphone.
+        // Free-text question and no ready-made replies configured: this dial
+        // has no keyboard and no microphone.
         lv_obj_t *l = lv_label_create(s_q_opts);
         lv_obj_set_width(l, 176);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -2002,6 +2190,7 @@ static void apply_dirty(void)
                 s_notif_questions = 0;
                 s_q_pending = 0;
                 s_q_valid = false;
+                s_q_reply = false;
                 s_stop_armed = false;
                 if (s_answers) { cJSON_Delete(s_answers); s_answers = NULL; }
                 if (s_screen != SCR_BOOT && s_screen != SCR_SETTINGS && s_screen != SCR_LAMP) {
@@ -2056,8 +2245,9 @@ static void apply_ev(const ui_ev_t *ev)
         buzzer_beep(BUZZER_BEEP_QUESTION);
         ui_wake();
         s_q_pending = cable_client_question_count();
-        // A question is a job: it takes the face — unless one is already
-        // being answered, in which case the header's "+n" says there is more.
+        // A question is a job: it takes the face — from a Relancer screen
+        // too — unless one is already being answered, in which case the
+        // header's "+n" says there is more.
         if (s_screen == SCR_LAMP) s_lamp_resume = true;
         if (s_screen != SCR_QUESTION) question_open();
         else question_render();
@@ -2106,7 +2296,8 @@ static void handle_button(btn_event_t ev)
         else if (ev == BTN_EVENT_A_LONG) home_open_current();
         else if (ev == BTN_EVENT_B_SHORT && s_q_pending > 0) question_open();
         break;
-    case SCR_QUESTION: {
+    case SCR_QUESTION:
+    case SCR_REPLY: {
         const cable_question_item_t *it = q_item();
         if (!it) break;
         const int n = it->opt_count;
@@ -2229,6 +2420,7 @@ bool ui_init(const char *fw_version, bool has_touch)
 {
     s_has_touch = has_touch;
     cable_utf8_copy(s_fw, sizeof(s_fw), fw_version ? fw_version : "?");
+    replies_load();
     s_btn_queue = xQueueCreate(8, sizeof(btn_event_t));
     s_ev_queue = xQueueCreate(12, sizeof(ui_ev_t));
     if (!s_btn_queue || !s_ev_queue) {
@@ -2278,7 +2470,7 @@ bool ui_init(const char *fw_version, bool has_touch)
 // Simulator only: which screen is up (the tests cannot see the static state).
 const char *ui_sim_screen(void)
 {
-    static const char *const names[] = { "boot", "offline", "home", "question", "settings", "pad", "lamp" };
+    static const char *const names[] = { "boot", "offline", "home", "question", "settings", "pad", "lamp", "reply" };
     return names[s_screen];
 }
 #endif
