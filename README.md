@@ -185,7 +185,9 @@ les tests"; empty = no *Follow up* chip) and the engines that get the chip
 - `tools/dial-linux/` — **the dial on Linux**: the Harness desktop app (the only
   thing that publishes the agents the dial may show) is macOS-only, so this
   bridges it locally over loopback (`app_panes` + `app_swarms` on the daemon's
-  local socket), plus systemd user units and a `hermes-dial` agent launcher.
+  local socket), plus systemd user units, a `hermes-dial` agent launcher, and
+  `harness-wrap`, which keeps an agent you start by hand in a plain terminal on
+  the dial.
 
 ## Limits
 
@@ -351,7 +353,8 @@ Le cadran n'affiche que les agents du *bureau* publié par une app connectée, e
 l'app de bureau Harness n'existe qu'en macOS : sous Linux, personne ne publie ce
 bureau et le cadran reste sur « aucun agent ». `tools/dial-linux/` le publie en
 local (loopback : `app_panes` + `app_swarms` sur la socket locale du daemon),
-avec les unités systemd et un lanceur d'agent `hermes-dial`.
+avec les unités systemd, un lanceur d'agent `hermes-dial`, et `harness-wrap`,
+qui garde sur le cadran un agent lancé à la main dans un terminal.
 
 ## Limites
 

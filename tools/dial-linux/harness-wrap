@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# harness-wrap — lance un moteur d'agent (claude, codex, hermes…) dans une session
+# tmux « harness-* » pour que le daemon Harness l'adopte et l'affiche sur le cadran.
+#
+#   harness-wrap claude -c          appel direct
+#   claude -c                       via la fonction de ~/.hermes/scripts/harness-wrap.sh
+#   <dir>/claude -> harness-wrap    via un lien symbolique placé en tête du PATH
+#
+# Tout ce qui n'est pas une session interactive humaine passe la main au vrai binaire
+# par `exec`, sans rien toucher : stdout, stderr et code de sortie identiques.
+# Doc : ~/.hermes/scripts/harness-wrap.md — désactivation ponctuelle : HARNESS_WRAP=0.
+
+HW_SELF=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null) || HW_SELF=${BASH_SOURCE[0]}
+HW_PREFIX=harness-
+HW_SOCKET=${HARNESS_WRAP_SOCKET:-/tmp/tmux-$(id -u)/default}  # serveur surveillé par le daemon
+# La table vit a cote du lanceur : le meme dossier marche pour une installation
+# ~/.hermes/scripts et pour un clone du depot, sans chemin en dur.
+HW_DIR=$(dirname -- "$HW_SELF")
+HW_ENGINES_CACHE=${HARNESS_WRAP_ENGINES:-$HW_DIR/harness-wrap.engines}
+HW_CLI_JS=${HARNESS_CLI_JS:-$HOME/.harness/cli/cli.js}
+
+# Nom de processus -> moteur, repris du daemon (table « nom d'exécutable » de cli.js).
+# Sert de secours si l'extraction échoue.
+HW_STATIC_ENGINES='claude claude
+codex codex
+agent cursor
+cursor-agent cursor
+opencode opencode
+pi pi
+hermes hermes
+hermes-agent hermes
+cmd commandcode
+command-code commandcode
+commandcode commandcode
+devin devin
+muse muse
+amp amp
+kilo kilo
+kilocode kilo
+grok grok
+agy agy
+copilot copilot'
+
+hw_say() { printf 'harness-wrap : %s\n' "$*" >&2; }
+
+# Avertissement affiché une seule fois par démarrage de la machine et par motif.
+hw_warn_once() {
+	local key=$1; shift
+	local dir=${XDG_RUNTIME_DIR:-/tmp}/harness-wrap-$(id -u)
+	[ -n "${HARNESS_WRAP_QUIET:-}" ] && return 0
+	mkdir -p -m 700 "$dir" 2>/dev/null
+	if [ -e "$dir/warned-$key" ]; then return 0; fi
+	: >"$dir/warned-$key" 2>/dev/null
+	hw_say "$* (cet avertissement ne sera plus répété jusqu'au prochain démarrage)"
+}
+
+# Extrait de cli.js la table {moteur:[noms d'exécutables]} — lecture bornée, jamais
+# de grep large sur ce fichier minifié d'une seule ligne de 5 Mo.
+hw_extract_engines() {
+	local blob pair id names n
+	[ -r "$HW_CLI_JS" ] || return 1
+	blob=$(LC_ALL=C command grep -o -E '\{claude:\["claude"\],codex:\[[^}]{0,800}\}' "$HW_CLI_JS" 2>/dev/null | head -n 1)
+	[ -n "$blob" ] || return 1
+	printf '%s\n' "$blob" | LC_ALL=C command grep -o -E '[a-z]+:\[[^]]*\]' | while IFS= read -r pair; do
+		id=${pair%%:*}
+		names=${pair#*:[}; names=${names%]}; names=${names//\"/}
+		for n in ${names//,/ }; do printf '%s %s\n' "$n" "$id"; done
+	done
+}
+
+hw_engine_table() {
+	if [ -s "$HW_ENGINES_CACHE" ]; then cat "$HW_ENGINES_CACHE"; else printf '%s\n' "$HW_STATIC_ENGINES"; fi
+}
+
+hw_refresh_engines() {
+	local out tmp
+	out=$(hw_extract_engines)
+	if [ -z "$out" ]; then
+		hw_say "extraction impossible depuis $HW_CLI_JS — liste statique conservée"
+		out=$HW_STATIC_ENGINES
+	fi
+	tmp=$HW_ENGINES_CACHE.tmp.$$
+	printf '%s\n' "$out" >"$tmp" && mv -f "$tmp" "$HW_ENGINES_CACHE"
+}
+
+hw_engine_id() {  # nom de commande -> identifiant de moteur du daemon (ou le nom lui-même)
+	local n id
+	while read -r n id; do
+		[ "$n" = "$1" ] && { printf '%s\n' "$id"; return 0; }
+	done < <(hw_engine_table)
+	printf '%s\n' "$1"
+}
+
+# Vrai binaire : premier exécutable du PATH qui n'est pas ce lanceur (cas du lien symbolique).
+hw_find_real() {
+	local name=$1 dir cand
+	case $name in */*) [ -x "$name" ] && { printf '%s\n' "$name"; return 0; }; return 1 ;; esac
+	local IFS=:
+	for dir in $PATH; do
+		cand=${dir:-.}/$name
+		[ -f "$cand" ] && [ -x "$cand" ] || continue
+		[ "$cand" -ef "$HW_SELF" ] && continue
+		printf '%s\n' "$cand"; return 0
+	done
+	return 1
+}
+
+# 0 = passer la main sans rien faire. Les règles d'arguments penchent vers le pass-through.
+hw_args_say_pass() {
+	local engine=$1 cmd=$2; shift 2
+	local a first=${1-}
+	for a in "$@"; do
+		case $a in
+			-h|--help|-v|-V|--version) return 0 ;;
+			-p|--print|--output-format|--output-format=*|--input-format|--input-format=*) return 0 ;;
+			--no-session-persistence|--json|--bg|--background) return 0 ;;
+		esac
+	done
+	case $engine in
+		claude)
+			for a in "$@"; do case $a in --) break ;; -[!-]*p*) return 0 ;; esac; done  # -p groupé (-cp…)
+			case $first in
+				agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|\
+				project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|config|\
+				migrate-installer|help) return 0 ;;
+			esac ;;
+		codex)
+			case $first in
+				exec|e|login|logout|mcp|mcp-server|app-server|completion|debug|apply|a|cloud|\
+				sandbox|proto|features|help) return 0 ;;
+			esac ;;
+		opencode)
+			case $first in
+				run|serve|web|auth|models|stats|export|import|github|upgrade|uninstall|mcp|\
+				agent|acp|debug|help) return 0 ;;
+			esac ;;
+		hermes)
+			[ "$cmd" = hermes-agent ] && return 0  # point d'entrée d'automatisation : dans le doute, rien
+			local skip=0 sub=
+			for a in "$@"; do
+				if [ "$skip" = 1 ]; then skip=0; continue; fi
+				case $a in
+					-z|--oneshot|-Q|--quiet|--format|--format=*|--query-file|--query-file=*|--usage-file|--usage-file=*) return 0 ;;
+					-m|--model|--provider|--reasoning|-t|--toolsets|--resume|--in|--skills|-s|-q|--query|\
+					--image|--max-turns|--run-budget|--source) skip=1 ;;
+					-*) ;;
+					*) sub=$a; break ;;
+				esac
+			done
+			[ -z "$sub" ] || [ "$sub" = chat ] || return 0 ;;
+	esac
+	return 1
+}
+
+hw_session_taken() { tmux -S "$HW_SOCKET" has-session -t "=$1" 2>/dev/null; }
+
+hw_pick_name() {
+	local engine=$1 base dirpart name
+	if [ "$PWD" = "$HOME" ]; then dirpart=home; else dirpart=${PWD##*/}; fi
+	dirpart=$(printf '%s' "$dirpart" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-' | cut -c1-24)
+	base=$HW_PREFIX$engine-${dirpart:-x}
+	name=$base
+	hw_session_taken "$name" || { printf '%s\n' "$name"; return; }
+	name=$base-$(date +%Y%m%d-%H%M%S)
+	hw_session_taken "$name" || { printf '%s\n' "$name"; return; }
+	printf '%s\n' "$name-$$"
+}
+
+# ---------------------------------------------------------------------------
+# Côté session tmux : restaure l'environnement de l'appelant, lance le moteur,
+# consigne le code de sortie pour le lanceur resté dans le terminal d'origine.
+hw_inner() {
+	# Préfixe _hw_ : la restauration ci-dessous ne doit pas écraser nos propres variables.
+	local _hw_dir=$1 _hw_i=0 _hw_rc _hw_kv _hw_n _hw_cwd
+	local -a _hw_argv
+	while [ ! -e "$_hw_dir/go" ] && [ "$_hw_i" -lt 60 ]; do sleep 0.05; _hw_i=$((_hw_i + 1)); done
+	# Environnement exact de l'appelant, sauf ce qui appartient à tmux.
+	local _hw_tmux=$TMUX _hw_pane=$TMUX_PANE _hw_term=$TERM _hw_tp=${TERM_PROGRAM-} _hw_tpv=${TERM_PROGRAM_VERSION-}
+	while IFS= read -r _hw_n; do unset "$_hw_n" 2>/dev/null; done < <(compgen -e)
+	while IFS= read -r -d '' _hw_kv; do
+		case ${_hw_kv%%=*} in TMUX|TMUX_PANE|TERM|TERM_PROGRAM|TERM_PROGRAM_VERSION|SHLVL|_|PWD|OLDPWD|_hw_*) continue ;; esac
+		export "$_hw_kv" 2>/dev/null
+	done <"$_hw_dir/env"
+	rm -f "$_hw_dir/env"
+	export TMUX=$_hw_tmux TMUX_PANE=$_hw_pane TERM=$_hw_term
+	[ -n "$_hw_tp" ] && export TERM_PROGRAM=$_hw_tp TERM_PROGRAM_VERSION=$_hw_tpv
+	while IFS= read -r -d '' _hw_kv; do _hw_argv+=("$_hw_kv"); done <"$_hw_dir/argv"
+	IFS= read -r -d '' _hw_cwd <"$_hw_dir/cwd"
+	cd -- "$_hw_cwd" 2>/dev/null
+	"${_hw_argv[@]}"
+	_hw_rc=$?
+	if [ "$_hw_rc" -ne 0 ]; then tmux capture-pane -p -J -S -40 -t "$TMUX_PANE" >"$_hw_dir/screen" 2>/dev/null; fi
+	printf '%s\n' "$_hw_rc" >"$_hw_dir/rc.tmp" && mv -f "$_hw_dir/rc.tmp" "$_hw_dir/rc"
+	[ -e "$_hw_dir/orphan" ] && rm -rf -- "$_hw_dir"
+	exit "$_hw_rc"
+}
+
+hw_finish() {  # après la fin de la session : rend le code de sortie du moteur
+	local dir=$1 name=$2 rc
+	if [ -s "$dir/rc" ]; then
+		read -r rc <"$dir/rc"
+		if [ "$rc" -ne 0 ] && grep -q '[^[:space:]]' "$dir/screen" 2>/dev/null; then
+			hw_say "« $name » terminé avec le code $rc ; fin de l'écran :"
+			grep -v '^[[:space:]]*$' "$dir/screen" | tail -n 12 >&2
+		fi
+		rm -rf -- "$dir"
+		exit "$rc"
+	fi
+	if hw_session_taken "$name"; then
+		: >"$dir/orphan"
+		hw_say "session « $name » toujours active — y revenir : tmux attach -t '$name'"
+		exit 0
+	fi
+	rm -rf -- "$dir"
+	hw_say "session « $name » fermée de l'extérieur avant la fin du moteur"
+	exit 129
+}
+
+# Ajoute (ou retire) la ligne de source dans ~/.bashrc et ~/.zshrc s'il existe.
+# Sauvegarde datée avant toute écriture ; rien d'existant n'est modifié ni réordonné.
+HW_RC_COMMENT='# harness-wrap : agents interactifs visibles sur le cadran (doc : ~/.hermes/scripts/harness-wrap.md)'
+HW_RC_LINE='[ -f "$HOME/.hermes/scripts/harness-wrap.sh" ] && . "$HOME/.hermes/scripts/harness-wrap.sh"'
+hw_install() {
+	local action=$1 rc bak check
+	for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+		[ -f "$rc" ] || continue
+		case $rc in *zshrc) check='zsh -n' ;; *) check='bash -n' ;; esac
+		if [ "$action" = install ] && grep -qxF "$HW_RC_LINE" "$rc"; then
+			echo "$rc : ligne déjà présente, rien à faire"; continue
+		fi
+		if [ "$action" = uninstall ] && ! grep -qxF "$HW_RC_LINE" "$rc"; then
+			echo "$rc : aucune ligne harness-wrap, rien à faire"; continue
+		fi
+		bak=$rc.avant-harness-wrap-$(date +%Y%m%d-%H%M%S)
+		cp -p -- "$rc" "$bak" || { echo "$rc : sauvegarde impossible, abandon" >&2; return 1; }
+		if [ "$action" = install ]; then
+			[ -n "$(tail -c 1 "$rc")" ] && echo >>"$rc"
+			printf '%s\n%s\n' "$HW_RC_COMMENT" "$HW_RC_LINE" >>"$rc"
+		else
+			grep -vxF -e "$HW_RC_COMMENT" -e "$HW_RC_LINE" "$bak" >"$rc"
+		fi
+		if command -v "${check%% *}" >/dev/null && ! $check "$rc"; then
+			cp -p -- "$bak" "$rc"; echo "$rc : $check échoue, fichier restauré depuis $bak" >&2; return 1
+		fi
+		echo "$rc : $action fait (sauvegarde : $bak)"
+	done
+}
+
+# ---------------------------------------------------------------------------
+# Point d'entrée
+
+me=${0##*/}
+if [ "$me" = harness-wrap ] || [ "${me%.*}" = harness-wrap ]; then
+	case ${1-} in
+		--__run) hw_inner "$2" ;;
+		--refresh-engines) hw_refresh_engines; hw_engine_table; exit 0 ;;
+		--install) hw_refresh_engines; hw_install install; exit ;;
+		--uninstall) hw_install uninstall; exit ;;
+		--engines)
+			hw_engine_table | while read -r n id; do
+				p=$(hw_find_real "$n") && printf '%-14s %-12s %s\n' "$n" "$id" "$p"
+			done
+			exit 0 ;;
+		-h|--help|'')
+			printf 'usage : harness-wrap <commande> [arguments…]\n        harness-wrap --engines | --refresh-engines | --install | --uninstall\n' >&2
+			[ -n "${1-}" ]; exit $? ;;
+		--) shift ;;
+	esac
+	cmd=$1; shift
+else
+	cmd=$me  # appelé via un lien symbolique portant le nom du moteur
+fi
+
+real=$(hw_find_real "$cmd") || { printf 'harness-wrap : %s : commande introuvable\n' "$cmd" >&2; exit 127; }
+
+# 1. Non interactif, désactivé ou appelé par un agent : la main, tout de suite, sans rien toucher.
+[ "${HARNESS_WRAP-}" = 0 ] && exec "$real" "$@"
+[ -t 0 ] && [ -t 1 ] || exec "$real" "$@"
+case ${TERM-} in ''|dumb) exec "$real" "$@" ;; esac
+if [ "${HARNESS_WRAP-}" != 1 ] && [ -n "${CLAUDECODE-}${HERMES_SESSION_KEY-}${HERMES_AGENT-}" ]; then
+	exec "$real" "$@"
+fi
+engine=$(hw_engine_id "${cmd##*/}")
+hw_args_say_pass "$engine" "${cmd##*/}" "$@" && exec "$real" "$@"
+
+# 2. Où sommes-nous ?
+if ! command -v tmux >/dev/null 2>&1; then
+	hw_warn_once no-tmux "tmux introuvable : $cmd lancé normalement, invisible sur le cadran"
+	exec "$real" "$@"
+fi
+mode=attach
+if [ -n "${TMUX-}" ]; then
+	cur=$(tmux display-message -p -t "${TMUX_PANE-}" '#{session_name}' 2>/dev/null)
+	if [ -z "$cur" ]; then
+		hw_warn_once tmux-query "session tmux courante illisible : $cmd lancé normalement"
+		exec "$real" "$@"
+	fi
+	case $cur in "$HW_PREFIX"*) exec "$real" "$@" ;; esac  # déjà visible : ne jamais imbriquer
+	if ! [ "${TMUX%%,*}" -ef "$HW_SOCKET" ]; then
+		hw_warn_once tmux-socket "ce tmux n'est pas celui du daemon ($HW_SOCKET) : $cmd lancé normalement, invisible sur le cadran"
+		exec "$real" "$@"
+	fi
+	mode=switch
+fi
+
+# 3. Préparer la session.
+name=$(hw_pick_name "$engine")
+dir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/harness-wrap.XXXXXX" 2>/dev/null) || {
+	hw_warn_once mktemp "répertoire temporaire impossible : $cmd lancé normalement"
+	exec "$real" "$@"
+}
+chmod 700 "$dir"
+env -0 >"$dir/env"
+printf '%s\0' "$real" "$@" >"$dir/argv"
+printf '%s\0' "$PWD" >"$dir/cwd"
+size=$(stty size 2>/dev/null)
+case $size in [1-9]*\ [1-9]*) ;; *) size='24 80' ;; esac  # terminal sans taille connue (0 0)
+
+if ! env -u TMUX tmux -S "$HW_SOCKET" new-session -d -s "$name" -c "$PWD" -x "${size#* }" -y "${size% *}" \
+	-- "$HW_SELF" --__run "$dir" 2>/dev/null; then
+	rm -rf -- "$dir"
+	hw_warn_once new-session "création de la session tmux impossible : $cmd lancé normalement"
+	exec "$real" "$@"
+fi
+# Session finie : attach rend la main (on) ; depuis un autre tmux, le client revient à la
+# session la plus récemment active (off), c.-à-d. celle d'où l'on vient.
+if [ "$mode" = attach ]; then dod=on; else dod=off; fi
+tmux -S "$HW_SOCKET" set-option -t "=$name:" detach-on-destroy "$dod" 2>/dev/null
+: >"$dir/go"
+# Terminal d'origine fermé : la session continue ; elle nettoiera l'état elle-même.
+trap ': >"$dir/orphan"; exit 129' HUP TERM
+
+# 4. Montrer la session.
+if [ "$mode" = attach ]; then
+	hw_say "$cmd lancé dans la session tmux « $name » pour être visible sur le cadran (détacher : Ctrl-b d)"
+	env -u TMUX tmux -S "$HW_SOCKET" attach-session -t "=$name"
+	hw_finish "$dir" "$name"
+fi
+
+hw_say "$cmd lancé dans une nouvelle session « $name » (« $cur » n'est pas visible sur le cadran) ; retour ici à la fin"
+tmux switch-client -t "=$name" 2>/dev/null ||
+	hw_say "bascule impossible — pour y aller : tmux switch-client -t '$name'"
+trap 'hw_finish "$dir" "$name"' INT
+i=0
+while [ ! -s "$dir/rc" ]; do
+	sleep 0.2; i=$((i + 1))
+	[ $((i % 10)) -eq 0 ] && ! hw_session_taken "$name" && [ ! -s "$dir/rc" ] && break
+done
+trap - INT
+hw_finish "$dir" "$name"

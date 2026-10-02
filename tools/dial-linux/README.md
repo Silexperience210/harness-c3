@@ -59,6 +59,12 @@ gestures (`focus`, `agent.open`, `turn.stop`) travel back to those agents.
 | `harness.service` | user unit for the daemon itself (`harness start -f`) |
 | `hermes-dial` | starts a Hermes agent in a `harness-*` tmux session so it appears as a card |
 | `hermes-dial.sh` + `dial-entry.py` | start the Hermes CLI under the process name the daemon matches |
+| `harness-wrap` | keeps a hand-launched agent on the dial: sends `claude`, `hermes`, `codex`… into a `harness-*` tmux session |
+| `harness-wrap.sh` | shell functions, one per installed engine — sourced from `~/.bashrc` |
+| `harness-wrap.engines` | engine table extracted from the daemon's own `cli.js` (`--refresh-engines` regenerates it) |
+| `test-harness-wrap.sh` | its test battery — 60 checks, no quota, private tmux server + fake engine |
+| `harness-wrap.md` | the detailed how-to (French) |
+| `harness-agents-purge.mjs` | deletes every daemon agent except the id you pass (stops the pane, **keeps the history**) |
 
 ## Install
 
@@ -142,6 +148,57 @@ without any help from the bridge.
 - no `open …` line at all → the bridge running is an older copy: reinstall
   `harness-desk-linux.mjs` to `~/.harness/` and restart the unit.
 
+## Keep a hand-launched agent on the dial: `harness-wrap`
+
+The daemon adopts a tmux pane only when its **session name starts with
+`harness-`**, and it identifies an engine by process name. A `claude` started in
+a plain terminal (`ptyxis → bash → claude`, no tmux) is therefore structurally
+invisible: no pane to watch, no card, no recap — and nothing to fix on the dial
+side.
+
+`harness-wrap` fixes that. You type `claude` as usual; the launcher puts it in a
+`harness-<engine>-<folder>` session, attaches your terminal, and the card shows
+up about two seconds after launch.
+
+```sh
+install -Dm755 harness-wrap harness-wrap.sh test-harness-wrap.sh ~/.hermes/scripts/  # any folder works
+~/.hermes/scripts/harness-wrap --install    # one sourcing line in ~/.bashrc (backed up, syntax-checked)
+harness-wrap claude -c                      # or just: claude, in a new terminal
+```
+
+Guards that must not be broken — they are what keeps automation alive:
+
+- a **non-interactive** call (no TTY) hands over to the real binary with stdout
+  and stderr **byte-identical** and the exit code preserved, so
+  `claude -p … --output-format json` driven by another agent keeps working;
+- same when an **agent** calls it (`CLAUDECODE`, `HERMES_SESSION_KEY`,
+  `HERMES_AGENT` set) and when `HARNESS_WRAP=0`;
+- it **never renames** an existing tmux session: renaming would make the daemon
+  adopt its other windows, and removing a card can close them. It opens a
+  `harness-*` session *beside* and gives your terminal back at the end;
+- sub-commands (`claude mcp`, `claude update`, `hermes cron`, …) go straight to
+  the real binary, otherwise their output would vanish with the session.
+
+`harness-wrap --engines` lists what it detected; the table is extracted from the
+daemon's own `cli.js`, so it follows a daemon update (`--refresh-engines`).
+`HARNESS_WRAP_BIN` and `HARNESS_WRAP_ENGINES` override the two paths.
+
+**Name your card.** A card is named after the **current folder** plus a short id
+(`harness-c3 · 574f`, `silex · 312d` when launched from `~`). Launch from the
+project folder and the dial tells you which project you are in — several
+identical `silex · 2026` cards are exactly what that avoids.
+
+Proof, not promise: `bash test-harness-wrap.sh` → **60 checks, 0 failures**, on a
+private tmux server with a fake engine, so it costs no quota. End to end the
+daemon logs `[discovery] … opened · engine=claude` → `[hooks] UserPromptSubmit`
+→ `[agent] … attached` → `[recap] … device=true`.
+
+Removing a card (`harness-agents-purge.mjs <id-to-keep>`, or the plain
+`agent_delete` frame) **stops the pane but keeps the history**: `agent_resume`
+restores the daemon's saved launch configuration. Cards whose `sessionId` is
+empty never ran anything, so they are safe to drop; the others have a live
+process.
+
 ## Pitfalls
 
 - `app_panes` without `app_swarms` = `agents → 0 of N` and an empty dial.
@@ -190,8 +247,13 @@ external `curl`, even with the right `x-harness-hook-token`
 Two limits worth knowing:
 
 - a session driven through the **gateway** (Telegram, no tmux pane) is not
-  watched at all — the daemon observes panes only, so it can never appear as a
-  card; and
+  watched at all — and the reason is deeper than the rule above: the daemon's own
+  hook script opens with `const tmuxPane = process.env.TMUX_PANE` then
+  `if (!tmuxPane) return` (`~/.harness/cli/notify.mjs`), so **without tmux the
+  hook never leaves the process**. Nothing is refused, because nothing is sent;
+  the gateway's environment has `HERMES_HOME` and `HERMES_SUPERVISED_CHILD` but no
+  `TMUX` at all. Making the gateway live inside tmux would be the only way to give
+  it a card; and
 - the **first** turn of a session loses its `turn_started` ("the turn opened
   before the session was attached") and therefore produces no recap. Later
   turns are complete.
