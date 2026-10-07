@@ -10,23 +10,27 @@ aussi installées sur la machine, et **il faut corriger les deux copies** (même
 | `repatch-hermes.py` | `~/.harness/repatch-hermes.py` | réapplique les correctifs dans `~/.harness/cli/cli.js` (idempotent, repérage par regex car les noms minifiés changent à chaque version, sauvegarde `.avant-repatch`, `node --check`, retour arrière) |
 | `harness_repatch.sh` | `~/.hermes/scripts/harness_repatch.sh` | veilleur cron `no_agent` (toutes les 5 min) : muet si tout est en place, sinon réapplique + redémarre `harness.service` + une ligne de rapport. **Code 2 = motif amont changé, à regarder.** |
 
-Correctifs portés : `383` (`harness new hermes` — **fusionné en amont** via la PR #412, ne sert
-plus que de garde-fou), `lock` (questions `clarify` visibles au cadran), `prompt`
-(`FIRST_PROMPT_ARGS.hermes = ['chat','-q']`).
+Correctif porté : **`383` seul**, comme garde-fou (`harness new hermes` — **fusionné en amont**
+via la PR #412 ; tant que `modeGiven` est dans le CLI, le patcheur ne fait rien).
 
-## Le cas du 07/10/2026 : un correctif qui devient inutile
+## Le cas du 07/10/2026 : des correctifs devenus inutiles
 
-Le CLI est passé de 0.3.26 à **0.3.64**. Le motif du pied de question
-`enter to (select|confirm|submit|lock)` est désormais **livré par l'amont** (c'est la partie
-« pied » de la PR #410) et le marqueur `▸` a disparu du texte de la question.
+Le CLI est passé de 0.3.26 à **0.3.64**, et le veilleur criait « extraction de la question
+introuvable » toutes les 5 minutes alors que rien n'était cassé. L'audit a montré que **`lock` et
+`prompt` sont livrés par l'amont** : la PR #410 a été **fusionnée le 29/09** (commit `0cf0d44`).
 
-Conséquence : la moitié du correctif `lock` qui retirait ce marqueur n'avait plus de cible et
-échouait — le veilleur criait « extraction de la question introuvable » **toutes les 5 minutes**
-alors que rien n'était cassé. Corrigé en ne lançant le retrait **que si le marqueur existe**.
+| correctif | amont (`origin/main`) | CLI installé 0.3.64 |
+|---|---|---|
+| `lock`, pied | `cli/src/lib/dialogEnd.ts` : `QUESTION_FOOTER_RE = /enter to (select\|confirm\|submit\|lock)…/` | même regex présente |
+| `lock`, marqueur `▸` | `cli/src/lib/askQuestion.ts` : `line.replace(/^▸\s*/, '')` | présent, **écrit `\u25b8`** dans le bundle |
+| `prompt` | `cli/src/lib/engineLaunch.ts` : `hermes: ['chat', '-q']` | `hermes:["chat","-q"]` présent |
+
+Ils ont donc été **retirés du patcheur**. Piège noté au passage : le `▸` n'avait pas « disparu » —
+le bundle l'écrit en échappement `\u25b8`, si bien qu'un `grep '▸'` ne le trouve pas.
 
 Leçon à garder : **un correctif qui échoue n'est pas toujours une régression — il peut être
 devenu inutile parce que l'amont l'a repris.** Avant de « réparer », vérifier que le motif visé
-n'est pas déjà livré par le nouveau code.
+n'est pas déjà livré par le nouveau code (et chercher aussi sa forme échappée `\uXXXX`).
 
 ## Vérifier que les questions remontent vraiment au cadran
 

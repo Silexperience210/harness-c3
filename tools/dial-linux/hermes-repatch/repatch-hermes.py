@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""Réapplique au CLI Harness installé les correctifs Hermes que l'amont n'a pas encore.
+"""Réapplique au CLI Harness installé le correctif Hermes #383 s'il venait à manquer.
 
-Le CLI se met à jour tout seul (toutes les 60 s) et chaque mise à jour efface ces correctifs.
-Ce script est idempotent : il ne touche au fichier que s'il manque un correctif, sauvegarde
+Le CLI se met à jour tout seul (toutes les 60 s) et chaque mise à jour efface les correctifs locaux.
+Ce script est idempotent : il ne touche au fichier que s'il manque le correctif, sauvegarde
 l'original à côté, vérifie la syntaxe avec `node --check`, et revient en arrière sinon.
 
 Les noms minifiés changent d'une version à l'autre : tout est repéré par des motifs
 (regex) sur la structure, jamais par un nom de fonction.
 
-  1. #383   — `harness new hermes` : n'envoyer permissionMode que si --mode/--plan est tapé.
-              FUSIONNÉ EN AMONT : repris par le mainteneur dans #412 (commit e144a11, co-auteur
-              Silexperience210). Le CLI installé 0.3.26 contient déjà `modeGiven` : ce correctif
-              ne s'applique donc plus. La fonction reste comme garde-fou (si l'amont régresse,
-              l'ancienne forme réapparaît et il est réappliqué).
-  2. lock   — questions `clarify` de Hermes : pied « Enter to lock » + marqueur `▸`.
-              PAS ENCORE EN AMONT — proposé par la PR #410 (rebasée, MERGEABLE).
-  3. prompt — Hermes accepte un premier message (`hermes chat -q …`, reste interactif sur un TTY) :
-              débloque `harness new hermes --prompt …` ET le fork « handoff » depuis le cadran.
-              PAS ENCORE EN AMONT — même PR #410.
+  #383 — `harness new hermes` : n'envoyer permissionMode que si --mode/--plan est tapé.
+          FUSIONNÉ EN AMONT : repris par le mainteneur dans #412 (commit e144a11, co-auteur
+          Silexperience210) ; le CLI installé contient `modeGiven`, ce correctif ne s'applique
+          donc plus. Il reste comme garde-fou : si `modeGiven` disparaît, l'ancienne forme
+          (≤ 0.3.14) est corrigée, et toute autre forme lève l'alerte (code 2).
+
+Retirés le 07/10/2026 parce que l'amont les livre (PR #410, fusionnée le 29/09, commit
+0cf0d44) : `lock` (pied « Enter to lock » + retrait du marqueur `▸`, cf. dialogEnd.ts et
+askQuestion.ts) et `prompt` (FIRST_PROMPT_ARGS.hermes = ['chat','-q'], cf. engineLaunch.ts).
 
 Sortie : rien si tout est déjà en place ; une ligne par correctif appliqué ; code 2 si un motif
 n'est plus reconnu (l'amont a changé le code : à regarder à la main).
@@ -55,42 +54,13 @@ def p383(s):
     return s.replace(old, new), "383 (harness new hermes)"
 
 
-def plock(s):
-    changed = False
-    old = r"enter to (select|confirm|submit)|enter\s+(submit|confirm|toggle)"
-    if "enter to (select|confirm|submit|lock)" not in s:
-        if s.count(old) != 1:
-            return s, "lock: regex du pied introuvable"
-        s = s.replace(old, r"enter to (select|confirm|submit|lock)|enter\s+(submit|confirm|toggle)")
-        changed = True
-    # CLI 0.3.64 : le marqueur `▸` n'existe plus dans le texte du pied. L'extraction
-    # n'a donc plus d'objet — ne plus alerter (code 2) à chaque tour pour rien.
-    if "▸" in s and 'replace(/^▸\\s*/,"")' not in s:
-        m = re.search(r'/\^\[─━-\]\{6,\}\$/\.test\((\w)\)\)break;(\w)=\1;break\}', s)
-        if not m:
-            return s, "lock: extraction de la question introuvable"
-        v, p = m.group(1), m.group(2)
-        s = s[:m.start()] + f'/^[─━-]{{6,}}$/.test({v}))break;{p}={v}.replace(/^▸\\s*/,"");break}}' + s[m.end():]
-        changed = True
-    return s, ("lock (questions Hermes)" if changed else None)
-
-
-def pprompt(s):
-    if 'hermes:["chat","-q"]' in s:
-        return s, None
-    m = re.search(r'(=\{opencode:\["--prompt"\],claude:\[\],codex:\[\],cursor:null,pi:null,)hermes:null,', s)
-    if not m:
-        return s, "prompt: table des premiers messages introuvable"
-    return s[:m.start()] + m.group(1) + 'hermes:["chat","-q"],' + s[m.end():], "prompt (fork + --prompt Hermes)"
-
-
 def main():
     check = "--check" in sys.argv
     src = open(CLI, encoding="utf-8").read()
     s, done, errors = src, [], []
-    for fn in (p383, plock, pprompt):
+    for fn in (p383,):
         s, msg = fn(s)
-        if msg and ":" in msg and not msg.startswith(("383 (", "lock (", "prompt (")):
+        if msg and ":" in msg and not msg.startswith("383 ("):
             errors.append(msg)
         elif msg:
             done.append(msg)
